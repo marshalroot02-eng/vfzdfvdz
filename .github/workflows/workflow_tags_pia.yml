@@ -1,0 +1,104 @@
+name: Extract Gig Tags - PIA VPN
+
+on:
+  workflow_dispatch:
+    inputs:
+      preferred_country:
+        description: "PIA VPN region (e.g. us_california, us_east, uk_london, de_berlin)"
+        required: false
+        default: "us_california"
+
+jobs:
+  extract-tags:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    env:
+      VPN_ENABLED: "1"
+      GITHUB_TOKEN: ${{ secrets.BOT_STORAGE_TOKEN }}
+      GITHUB_REPO: "Zaiinalii/fiverr-bot-storage"
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install curl_cffi requests certifi
+
+      - name: Install OpenVPN
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y openvpn unzip jq
+          openvpn --version | head -1
+
+      - name: Download PIA OpenVPN Configs
+        run: |
+          sudo mkdir -p /etc/openvpn/pia
+          sudo curl -fSL -o /tmp/pia.zip https://www.privateinternetaccess.com/openvpn/openvpn.zip
+          sudo unzip -o /tmp/pia.zip -d /etc/openvpn/pia
+          CONFIG_COUNT=$(ls /etc/openvpn/pia/*.ovpn 2>/dev/null | wc -l)
+          echo "Downloaded $CONFIG_COUNT PIA region configs"
+          echo "OPENVPN_CONFIG_DIR=/etc/openvpn/pia" >> $GITHUB_ENV
+          echo "OPENVPN_AUTH_FILE=/etc/openvpn/auth.txt" >> $GITHUB_ENV
+
+      - name: Connect PIA VPN
+        run: |
+          sudo modprobe tun || true
+          echo "p8158950" | sudo tee /etc/openvpn/auth.txt > /dev/null
+          printf '%s\n' 'GoYoula@niba12$2323' | sudo tee -a /etc/openvpn/auth.txt > /dev/null
+          sudo chmod 600 /etc/openvpn/auth.txt
+
+          REGION="${{ github.event.inputs.preferred_country }}"
+          INITIAL="/etc/openvpn/pia/${REGION}.ovpn"
+          if [ ! -f "$INITIAL" ]; then
+            INITIAL=$(ls /etc/openvpn/pia/us_*.ovpn 2>/dev/null | shuf -n1)
+            [ -z "$INITIAL" ] && INITIAL=$(ls /etc/openvpn/pia/*.ovpn | shuf -n1)
+          fi
+          echo "Connecting to: $(basename $INITIAL)"
+
+          sudo openvpn --config "$INITIAL" --auth-user-pass /etc/openvpn/auth.txt --auth-nocache --daemon --log /tmp/openvpn.log
+
+          for i in $(seq 1 30); do
+            if sudo grep -q "Initialization Sequence Completed" /tmp/openvpn.log; then
+              echo "PIA VPN CONNECTED"; break
+            fi
+            if sudo grep -q "AUTH_FAILED" /tmp/openvpn.log; then
+              echo "AUTH FAILED"; sudo cat /tmp/openvpn.log; exit 1
+            fi
+            echo "Waiting $i"; sleep 2
+          done
+
+          sudo grep -q "Initialization Sequence Completed" /tmp/openvpn.log || { echo "VPN timeout"; sudo cat /tmp/openvpn.log; exit 1; }
+
+      - name: Verify VPN IP
+        run: |
+          IP_INFO=$(curl -s http://ip-api.com/json)
+          echo "$IP_INFO" | jq .
+          ISP=$(echo "$IP_INFO" | jq -r '.isp')
+          echo "$ISP" | grep -qi "microsoft" && { echo "Still on Azure IP"; exit 1; } || echo "PIA VPN active"
+
+      - name: Download extract_gig_tags.py
+        run: |
+          curl -fSL https://pub-4e3db5ccea8a4f30ae7d4ee15e71f566.r2.dev/extract_gig_tags.py -o extract_gig_tags.py
+          ls -lh extract_gig_tags.py
+
+      - name: Run Tag Extraction
+        run: |
+          echo "Starting Gig Tag Extraction..."
+          echo "============================================="
+          python -u extract_gig_tags.py 2>&1 | tee /tmp/tags.log
+
+      - name: Upload Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tags-log-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/tags.log
+          retention-days: 7
