@@ -1,0 +1,3 @@
+camoufox[geoip]
+playwright
+httpx
