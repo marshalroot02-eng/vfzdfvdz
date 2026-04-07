@@ -237,20 +237,21 @@ async def main():
     global runner_id
     print(f"[START] Fleet Runner | API: {API_URL} | Session: {SESSION_ID} | Repo: {REPO_ID}")
 
-    # Get proxy
+    # Claim a proxy (round-robin, least-recently-used)
     proxy_config = None
     async with httpx.AsyncClient() as client:
         try:
-            proxies = await api_get(client, "/proxies/active")
-            if proxies:
-                p = proxies[0]
+            p = await api_post(client, "/proxies/claim", {})
+            if p and p.get('host'):
                 ps = f"{p['host']}:{p['port']}"
                 if p.get('username'):
                     ps += f":{p['username']}:{p['password']}"
                 proxy_config = parse_proxy(ps)
                 print(f"[PROXY] {p['host']}:{p['port']}")
+            else:
+                print("[WARN] No proxy assigned - running without proxy")
         except Exception as e:
-            print(f"[WARN] No proxies: {e}")
+            print(f"[WARN] No proxies available: {e}")
 
     browser = None
     try:
