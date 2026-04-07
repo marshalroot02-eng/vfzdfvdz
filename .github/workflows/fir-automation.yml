@@ -1,0 +1,55 @@
+name: FIR Search Automation
+
+on:
+  workflow_dispatch:
+    inputs:
+      session_id:
+        description: 'Fleet session ID'
+        required: true
+      repo_id:
+        description: 'Fleet repo ID'
+        required: true
+      api_url:
+        description: 'Backend API URL'
+        required: true
+      api_key:
+        description: 'API key for authentication'
+        required: true
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r runner/requirements.txt
+          python -m playwright install firefox
+          python -m camoufox fetch
+
+      - name: Run FIR scraper
+        env:
+          API_URL: ${{ github.event.inputs.api_url }}
+          API_KEY: ${{ github.event.inputs.api_key }}
+          SESSION_ID: ${{ github.event.inputs.session_id }}
+          REPO_ID: ${{ github.event.inputs.repo_id }}
+          DISPLAY: ':99'
+        run: |
+          Xvfb :99 -screen 0 1920x1080x24 &
+          sleep 2
+          python runner/fir_runner.py
