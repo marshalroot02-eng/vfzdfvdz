@@ -1,4 +1,4 @@
-name: Fiverr HTTP Scraper - PIA VPN (curl_cffi)
+name: Fiverr HTTP Scraper v2 - PIA VPN (curl_cffi anti-bot)
 
 on:
   workflow_dispatch:
@@ -132,10 +132,10 @@ jobs:
           fi
 
       # ───────── DOWNLOAD BOT ─────────
-      - name: Download Mainbot_http.py
+      - name: Download Mainbot_http_v2.py
         run: |
-          curl -fSL https://pub-4e3db5ccea8a4f30ae7d4ee15e71f566.r2.dev/Mainbot_http.py -o Mainbot_http.py
-          ls -lh Mainbot_http.py
+          curl -fSL https://pub-4e3db5ccea8a4f30ae7d4ee15e71f566.r2.dev/Mainbot_http_v2.py -o Mainbot_http_v2.py
+          ls -lh Mainbot_http_v2.py
 
       # ───────── RUN SCRAPER ─────────
       - name: Run Scraper
@@ -146,13 +146,13 @@ jobs:
           echo "   PIA Region: $PREFERRED_COUNTRY"
           echo "============================================="
           
-          python -u Mainbot_http.py 2>&1 | tee /tmp/scraper.log
+          python -u Mainbot_http_v2.py 2>&1 | tee /tmp/scraper.log
 
       # ───────── UPLOAD LOG ─────────
       - name: Upload Logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: http-scraper-pia-log-${{ github.run_id }}
+          name: http-scraper-v2-pia-log-${{ github.run_id }}
           path: /tmp/scraper.log
           retention-days: 7
