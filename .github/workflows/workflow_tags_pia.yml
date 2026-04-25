@@ -37,7 +37,7 @@ jobs:
       - name: Install Python Dependencies
         run: |
           pip install --upgrade pip
-          pip install curl_cffi requests certifi
+          pip install --upgrade "curl_cffi>=0.11.0" requests certifi
 
       # ───────── OPENVPN + DEPS ─────────
       - name: Install OpenVPN
