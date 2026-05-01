@@ -12,6 +12,10 @@ on:
         required: false
         default: "false"
 
+concurrency:
+  group: ${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   scrape:
     runs-on: ubuntu-latest
@@ -147,6 +151,24 @@ jobs:
           echo "============================================="
           
           python -u Mainbot_http_v2.py 2>&1 | tee /tmp/scraper.log
+
+      # ───────── NOTIFY FGOS: RUN COMPLETE ─────────
+      # Tell FGOS this repo's workflow run is done so auto-scale sees it as available again.
+      # The VM_ID sent here matches what Mainbot registers, so the backend updates the runner
+      # status AND resets last_run_status on the repo for future dispatch eligibility.
+      - name: Notify FGOS Run Complete
+        if: always()
+        env:
+          FGOS_API_KEY: ${{ secrets.FGOS_API_KEY }}
+        run: |
+          REPO="${{ github.repository }}"
+          RUN_ID="${{ github.run_id }}"
+          OUTCOME="${{ job.status }}"
+          curl -s -X POST "https://api.fgos.site/api/v1/ingestion/fleet/runner-workflow-done" \
+            -H "Content-Type: application/json" \
+            -H "x-api-key: $FGOS_API_KEY" \
+            -d "{\"repo_name\":\"$REPO\",\"run_id\":$RUN_ID,\"outcome\":\"$OUTCOME\"}" || true
+          echo "FGOS notified: repo=$REPO run_id=$RUN_ID outcome=$OUTCOME"
 
       # ───────── UPLOAD LOG ─────────
       - name: Upload Logs
