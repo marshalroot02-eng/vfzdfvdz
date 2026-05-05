@@ -136,9 +136,39 @@ jobs:
           fi
 
       # ───────── DOWNLOAD BOT ─────────
-      - name: Download Mainbot_http_v2.py
+      # Pulled from FGOS (authenticated) instead of public R2.
+      # Endpoint: GET /api/v1/ingestion/fleet/bot-script  (header: x-api-key)
+      # Response headers: X-Bot-SHA256, X-Bot-Size — used below for integrity check.
+      - name: Download Mainbot_http_v2.py from FGOS
+        env:
+          FGOS_API_KEY: ${{ secrets.FGOS_API_KEY }}
         run: |
-          curl -fSL https://pub-4e3db5ccea8a4f30ae7d4ee15e71f566.r2.dev/Mainbot_http_v2.py -o Mainbot_http_v2.py
+          set -e
+          URL="https://api.fgos.site/api/v1/ingestion/fleet/bot-script"
+
+          # Capture response headers + body in one call.
+          HTTP_CODE=$(curl -sSL -o Mainbot_http_v2.py -D /tmp/bot_headers.txt \
+            -H "x-api-key: $FGOS_API_KEY" \
+            -w "%{http_code}" "$URL")
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "Bot download failed: HTTP $HTTP_CODE"
+            cat /tmp/bot_headers.txt
+            exit 1
+          fi
+
+          # Sanity: file must be non-empty and start with a Python comment.
+          test -s Mainbot_http_v2.py || { echo "Empty bot file"; exit 1; }
+          head -1 Mainbot_http_v2.py | grep -q '^#' || { echo "Bot file does not start with #"; exit 1; }
+
+          # Integrity: verify SHA-256 against what FGOS served.
+          EXPECTED_SHA=$(grep -i '^X-Bot-SHA256:' /tmp/bot_headers.txt | tr -d '\r' | awk '{print $2}')
+          ACTUAL_SHA=$(sha256sum Mainbot_http_v2.py | awk '{print $1}')
+          if [ -n "$EXPECTED_SHA" ] && [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
+            echo "SHA-256 mismatch: server=$EXPECTED_SHA, local=$ACTUAL_SHA"
+            exit 1
+          fi
+          echo "Bot script OK: sha256=${ACTUAL_SHA:0:16}…"
           ls -lh Mainbot_http_v2.py
 
       # ───────── RUN SCRAPER ─────────
