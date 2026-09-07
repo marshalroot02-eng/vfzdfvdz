@@ -410,32 +410,43 @@ class ADBController:
         logger.info(f"Navigating to TikTok Live stream: URL='{stream_url}', room_id='{room_id}', user='{stream_user}'")
         
         # Ensure correct installed package name is set
-        self.is_package_installed()
+        has_native = self.is_package_installed()
 
-        # 1. Disable Chrome to prevent it from intercepting TikTok links
-        self.shell("pm disable-user --user 0 com.android.chrome 2>/dev/null || true")
-
-        # 2. Launch Native TikTok App directly via standard Activity Manager intent (NEVER use monkey)
-        logger.info(f"Launching TikTok Native App ({self.package_name})...")
-        self.shell(f"am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p {self.package_name}")
-        time.sleep(4)
-        self.dismiss_popups()
-
-        # 3. Resolve canonical stream info
+        # Resolve canonical stream info
         resolved_url, parsed_room_id, parsed_user = self.resolve_canonical_stream_info(stream_url)
         target_room_id = room_id or parsed_room_id
         target_user = stream_user or parsed_user
         target_url = resolved_url or stream_url
 
-        # 4. Route directly into Live Room
-        if target_room_id:
-            logger.info(f"Navigating to Live Room ID: {target_room_id}...")
-            self.shell(f'am start -a android.intent.action.VIEW -d "snssdk1233://live?room_id={target_room_id}" {self.package_name}')
-            time.sleep(3)
-        elif target_url:
-            logger.info(f"Navigating to Live URL: {target_url}...")
-            self.shell(f'am start -a android.intent.action.VIEW -d "{target_url}" {self.package_name}')
-            time.sleep(3)
+        if has_native:
+            # 1. Disable Chrome to prevent it from intercepting TikTok links
+            self.shell("pm disable-user --user 0 com.android.chrome 2>/dev/null || true")
+
+            # 2. Launch Native TikTok App directly via standard Activity Manager intent
+            logger.info(f"Launching TikTok Native App ({self.package_name})...")
+            self.shell(f"am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p {self.package_name}")
+            time.sleep(4)
+            self.dismiss_popups()
+
+            # 3. Route directly into Live Room
+            if target_room_id:
+                logger.info(f"Navigating to Live Room ID: {target_room_id}...")
+                self.shell(f'am start -a android.intent.action.VIEW -d "snssdk1233://live?room_id={target_room_id}" {self.package_name}')
+                time.sleep(3)
+            elif target_url:
+                logger.info(f"Navigating to Live URL: {target_url}...")
+                self.shell(f'am start -a android.intent.action.VIEW -d "{target_url}" {self.package_name}')
+                time.sleep(3)
+        else:
+            # 4. Fallback: Enable Chrome and open live stream URL directly
+            logger.info("TikTok native app not installed. Enabling Chrome for live stream viewing...")
+            self.shell("pm enable com.android.chrome 2>/dev/null || true")
+            self.shell("pm unhide com.android.chrome 2>/dev/null || true")
+            time.sleep(1)
+            launch_url = target_url or (f"https://www.tiktok.com/@{target_user}/live" if target_user else "https://www.tiktok.com/live")
+            logger.info(f"Launching Chrome browser with URL: {launch_url}")
+            self.shell(f'am start -n com.android.chrome/com.google.android.apps.chrome.Main -a android.intent.action.VIEW -d "{launch_url}"')
+            time.sleep(4)
 
         self.dismiss_popups()
 
@@ -656,6 +667,10 @@ class ADBController:
         
         # 1. Dismiss Android Immersive / Full-screen tooltips ("Got it" / "OK")
         if self.click_element(text="Got it") or self.click_element(text="OK") or self.click_element(text="Agree"):
+            time.sleep(0.5)
+
+        # Chrome First-Run Dialogs
+        if self.click_element(text="Accept & continue") or self.click_element(text="No thanks") or self.click_element(text="Not now"):
             time.sleep(0.5)
 
         # 2. Dismiss System ANR Dialogs if present by exact button click
