@@ -48,7 +48,7 @@ class TikTokBoosterOrchestrator:
         self.adb = ADBController(self.config)
         self.vpn = VPNService(self.config)
         self.auto_login = AutoLoginManager(self.config, self.adb)
-        self.stream_forwarder = ScrcpyStreamForwarder(self.config.backend_url, self.runner_key, token=self.config.runner_secret, command_callback=self._handle_live_ws_command)
+        self.stream_forwarder = ScrcpyStreamForwarder(self.config.backend_url, self.runner_key, token=self.config.runner_secret, command_callback=self._handle_live_ws_command, adb_controller=self.adb)
 
         signal.signal(signal.SIGINT, self._handle_exit)
         signal.signal(signal.SIGTERM, self._handle_exit)
@@ -305,6 +305,7 @@ class TikTokBoosterOrchestrator:
         """Immediately executes live control commands received directly over the Scrcpy WebSocket."""
         action = payload.get("action")
         logger.info(f"[LIVE_WS_COMMAND] Executing action {action} directly")
+        self.adb.user_override_until = time.time() + 45
         if action in ["stop", "shutdown"]:
             self.is_running = False
             self.transition_state(RunnerState.STOPPED, reason="Stopped by operator via WebSocket")
@@ -775,8 +776,6 @@ class TikTokBoosterOrchestrator:
                 if self.adb.is_live_stream_active():
                     taps = self.adb.send_batch_likes(tap_count=taps_per_burst, delay_ms=120)
                     self.total_likes_sent += taps
-                else:
-                    self.adb.dismiss_popups()
                 last_burst_time = now
 
             # Send Telemetry & Process Remote Commands every 2.5s
