@@ -29,11 +29,12 @@ class ScrcpyStreamForwarder:
     Android 14 (scrcpy-server) <-> StreamForwarder <-> Central Backend WebSocket Relay <-> Browser
     """
 
-    def __init__(self, backend_url: str, runner_key: str, token: str = "", command_callback: Optional[Callable[[dict], None]] = None):
+    def __init__(self, backend_url: str, runner_key: str, token: str = "", command_callback: Optional[Callable[[dict], None]] = None, adb_controller=None):
         self.backend_url = backend_url.rstrip("/")
         self.runner_key = runner_key
         self.token = token
         self.command_callback = command_callback
+        self.adb = adb_controller
         self.is_running = False
         self.scrcpy_process = None
         self.video_socket = None
@@ -395,6 +396,9 @@ class ScrcpyStreamForwarder:
     async def _receive_control_ws(self, ws):
         """Receives binary Scrcpy control messages and JSON commands from the browser WebSocket."""
         async for msg in ws:
+            if self.adb:
+                self.adb.user_override_until = time.time() + 45
+
             if msg.type == aiohttp.WSMsgType.BINARY and msg.data:
                 data = msg.data
                 handled = False
