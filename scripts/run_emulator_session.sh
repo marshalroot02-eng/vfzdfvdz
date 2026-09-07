@@ -30,6 +30,12 @@ if [ "$SDK_VER" != "34" ]; then
 fi
 echo "[PASS] Android 14 (API 34) verified successfully!"
 
+# Configure Clean HD Portrait Display Resolution (720x1280 @ 240 DPI)
+echo "Configuring HD Android Display Resolution (720x1280 @ 240dpi)..."
+adb shell wm size 720x1280 || true
+adb shell wm density 240 || true
+sleep 1
+
 # 2. Fast Tap script
 echo "=== [2/4] Setting Up Fast Tap Acceleration Script ==="
 if [ -f "./scripts/fast_tap.sh" ]; then
