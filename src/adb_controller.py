@@ -685,12 +685,12 @@ class ADBController:
         if self.click_element(text="Skip") or self.click_element(text="Start watching"):
             time.sleep(0.5)
 
-        # 5. Dismiss 'Log in to TikTok' modal to enter live stream as guest
+        # 5. Dismiss 'Log in to TikTok' modal ONLY if an explicit close button is available
         if self.is_login_or_signup_screen():
-            logger.info("Dismissing 'Log in to TikTok' modal to enter live stream...")
-            if not self.click_element(content_desc="Close") and not self.click_element(text="Close"):
-                self.shell("input keyevent 4")
-            time.sleep(1)
+            # Only click explicit close buttons; NEVER send Back key which closes login screen and switches apps!
+            if not self.click_element(content_desc="Close"):
+                self.click_element(text="Close")
+            time.sleep(0.5)
 
     def get_safe_live_tap_coordinates(self) -> Tuple[int, int]:
         """
