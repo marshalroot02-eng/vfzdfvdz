@@ -2,9 +2,6 @@ name: Pure LDPlayer 9 Windows Diagnostic
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
 
 jobs:
   ldplayer-diagnostic:
