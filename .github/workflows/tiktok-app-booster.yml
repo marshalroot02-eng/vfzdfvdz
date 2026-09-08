@@ -128,7 +128,7 @@ jobs:
           path: |
             ~/.android/avd/*
             ~/.android/adb*
-          key: avd-34-x86_64-v3
+          key: avd-34-x86_64-v4
 
       # ───────── OPENVPN & PIA CONFIGS ─────────
       - name: Install OpenVPN & Download PIA Configs
@@ -149,6 +149,12 @@ jobs:
           
           echo "OPENVPN_CONFIG_DIR=/etc/openvpn/pia" >> $GITHUB_ENV
           echo "OPENVPN_AUTH_FILE=/etc/openvpn/auth.txt" >> $GITHUB_ENV
+
+      - name: Pre-Download Official Standard TikTok APK
+        run: |
+          echo "=== Pre-downloading Official TikTok APK from CDN ==="
+          curl -fSL "${{ secrets.TIKTOK_APK_URL || 'https://api.fgos.site/tiktok/assets/tiktok.apk' }}" -o /tmp/tiktok.apk || true
+          ls -lh /tmp/tiktok.apk || true
 
       - name: Make Scripts Executable & Normalize Line Endings
         run: |
