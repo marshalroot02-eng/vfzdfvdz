@@ -128,7 +128,7 @@ jobs:
           path: |
             ~/.android/avd/*
             ~/.android/adb*
-          key: avd-34-x86_64-v2
+          key: avd-34-x86_64-v3
 
       # ───────── OPENVPN & PIA CONFIGS ─────────
       - name: Install OpenVPN & Download PIA Configs
