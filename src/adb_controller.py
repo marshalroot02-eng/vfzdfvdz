@@ -278,12 +278,12 @@ class ADBController:
                 import requests
                 logger.info(f"Downloading APK from {target_path} ...")
                 local_apk = os.path.join(os.getcwd(), "app_download.apk")
-                resp = requests.get(target_path, stream=True, timeout=60, headers={"User-Agent": "Mozilla/5.0"})
+                resp = requests.get(target_path, stream=True, timeout=(15, 120), headers={"User-Agent": "Mozilla/5.0"})
                 if resp.status_code != 200:
                     logger.warning(f"Failed to download APK from {target_path}: HTTP {resp.status_code}")
                     return False
                 with open(local_apk, "wb") as f:
-                    for chunk in resp.iter_content(chunk_size=16384):
+                    for chunk in resp.iter_content(chunk_size=65536):
                         f.write(chunk)
                 target_path = local_apk
 
@@ -291,7 +291,7 @@ class ADBController:
                 return False
 
             logger.info(f"Installing APK: {target_path} ...")
-            res = self.run_cmd(["install", "-r", "-d", "-g", target_path], timeout=120)
+            res = self.run_cmd(["install", "-r", "-d", "-g", target_path], timeout=240)
             if "Success" in res.stdout or res.returncode == 0:
                 logger.info("APK installation succeeded!")
                 return True
