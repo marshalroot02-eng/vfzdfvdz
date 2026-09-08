@@ -253,15 +253,21 @@ class ADBController:
             return False
 
     def is_package_installed(self, package_name: Optional[str] = None) -> bool:
-        """Checks if the TikTok package is installed on the device across all variants."""
-        candidate_packages = [
-            package_name,
-            self.package_name,
-            "com.zhiliaoapp.musically",
-            "com.ss.android.ugc.trill",
-            "com.zhiliaoapp.musically.go"
-        ]
+        """Checks if the official standard TikTok package is installed on the device."""
+        target_pkg = package_name or getattr(self.config, 'tiktok_package', 'com.zhiliaoapp.musically')
         out = self.shell("pm list packages")
+
+        # Purge TikTok Lite if present on emulator image so real TikTok runs exclusively
+        if "package:com.zhiliaoapp.musically.go" in out:
+            logger.info("Purging stale TikTok Lite package (com.zhiliaoapp.musically.go) from device...")
+            self.shell("pm uninstall com.zhiliaoapp.musically.go")
+            out = self.shell("pm list packages")
+
+        candidate_packages = [
+            target_pkg,
+            "com.zhiliaoapp.musically",
+            "com.ss.android.ugc.trill"
+        ]
         for pkg in candidate_packages:
             if pkg and f"package:{pkg}" in out:
                 self.package_name = pkg
@@ -630,7 +636,6 @@ class ADBController:
         return any(pkg in out for pkg in [
             self.package_name,
             "com.zhiliaoapp.musically",
-            "com.zhiliaoapp.musically.go",
             "com.ss.android.ugc.trill"
         ])
 
