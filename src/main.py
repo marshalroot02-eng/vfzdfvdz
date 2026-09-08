@@ -515,10 +515,12 @@ class TikTokBoosterOrchestrator:
 
         self.adb.wake_and_unlock()
 
-        # 4. App Installation Verification
-        self.transition_state(RunnerState.APP_STARTING, reason="Verifying TikTok APK installation and launching app")
+        # 4. App Installation Verification (Native TikTok Mandatory)
+        self.transition_state(RunnerState.APP_STARTING, reason="Verifying Native TikTok APK installation and launching app")
         if not self.adb.ensure_app_installed():
-            logger.warning("TikTok package is not installed. Proceeding with browser fallback.")
+            logger.critical("[-] FATAL: Native TikTok Mobile App is not installed and failed to install. Halting runner.")
+            self.transition_state(RunnerState.ERROR, reason="Native TikTok Mobile App missing or installation failed")
+            sys.exit(1)
 
         # Verify initial emulator network egress
         if self.config.vpn_provider != "none":
