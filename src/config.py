@@ -34,6 +34,7 @@ class AppConfig:
         self.adb_device_id: Optional[str] = os.getenv("ADB_DEVICE_ID", None)
         self.tiktok_apk_url: str = os.getenv("TIKTOK_APK_URL") or "https://api.fgos.site/tiktok/assets/tiktok.apk"
         self.custom_apk_url: str = self.tiktok_apk_url
+        self.tiktok_package: str = os.getenv("TIKTOK_PACKAGE", "com.zhiliaoapp.musically")
         
         # Network / VPN / Proxy / Backend
         self.vpn_provider: str = os.getenv("VPN_PROVIDER", "none").lower() # none, nordvpn, pia
