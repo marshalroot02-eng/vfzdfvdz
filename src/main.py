@@ -53,6 +53,10 @@ class TikTokBoosterOrchestrator:
         signal.signal(signal.SIGINT, self._handle_exit)
         signal.signal(signal.SIGTERM, self._handle_exit)
 
+        # Continuous background heartbeat loop ensuring runner telemetry never starves during long tasks
+        self.heartbeat_thread = threading.Thread(target=self._background_heartbeat_loop, daemon=True)
+        self.heartbeat_thread.start()
+
     def add_step_log(self, step: str, message: str, level: str = "INFO"):
         """Records a timestamped runner operational step log sent to the backend/WebSocket."""
         ts = datetime.utcnow().strftime("%H:%M:%S")
@@ -237,8 +241,21 @@ class TikTokBoosterOrchestrator:
         self._net_telemetry_last_check = now
         return telemetry
 
+    def _background_heartbeat_loop(self):
+        """Continuously transmits background heartbeats every 4s so runner stays online during any long task."""
+        while self.is_running:
+            time.sleep(4.0)
+            if not self.is_running:
+                break
+            try:
+                if time.time() - self.last_heartbeat_time >= 3.5:
+                    self.send_heartbeat(include_screenshot=False, reason=getattr(self, 'current_reason', 'Running'))
+            except Exception as e:
+                logger.debug(f"Background heartbeat note: {e}")
+
     def send_heartbeat(self, include_screenshot=False, reason: str = "") -> list:
         """Transmits state heartbeat to central backend and retrieves pending control commands."""
+        self.last_heartbeat_time = time.time()
         url = f"{self.config.backend_url}/api/telemetry/heartbeat"
         screenshot_b64 = None
         if include_screenshot:
