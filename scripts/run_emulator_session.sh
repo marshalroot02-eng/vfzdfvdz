@@ -47,7 +47,7 @@ fi
 
 # 3. Setup & Launch Official Scrcpy v2.4 Server
 echo "=== [3/4] Setting Up Official Scrcpy v2.4 Server ==="
-if [ -f "bash ./scripts/setup_scrcpy.sh" ]; then
+if [ -f "./scripts/setup_scrcpy.sh" ]; then
     chmod +x ./scripts/setup_scrcpy.sh
     ./scripts/setup_scrcpy.sh
     echo "[PASS] scrcpy-server v2.4 launched on port 27183."
