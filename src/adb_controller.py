@@ -303,16 +303,19 @@ class ADBController:
             return False
 
     def ensure_app_installed(self, apk_path_or_url: Optional[str] = None) -> bool:
-        """Verifies full standard TikTok is installed, or installs it automatically from configured APK source."""
+        """Verifies full native TikTok is installed, or installs it automatically from configured APK source."""
         if self.is_package_installed():
-            logger.info(f"TikTok package '{self.package_name}' is already installed.")
+            logger.info(f"[+] Native TikTok package '{self.package_name}' is already installed.")
             return True
 
-        target_apk = apk_path_or_url or getattr(self.config, 'tiktok_apk_url', None)
+        target_apk = apk_path_or_url or getattr(self.config, 'tiktok_apk_url', None) or "https://api.fgos.site/tiktok/assets/tiktok.apk"
+        logger.info(f"Native TikTok not found on device. Installing from: {target_apk} ...")
         if target_apk and self.install_apk(target_apk):
-            return self.is_package_installed()
+            if self.is_package_installed():
+                logger.info(f"[+] Native TikTok App successfully installed: {self.package_name}")
+                return True
 
-        logger.info("TikTok package is not installed. Proceeding with instant Chrome web stream automation.")
+        logger.error("[-] FATAL: Failed to install Native TikTok App. Chrome fallback has been disabled.")
         return False
 
     def resolve_canonical_stream_info(self, raw_url: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -418,35 +421,29 @@ class ADBController:
         target_user = stream_user or parsed_user
         target_url = resolved_url or stream_url
 
-        if has_native:
-            # 1. Disable Chrome to prevent it from intercepting TikTok links
-            self.shell("pm disable-user --user 0 com.android.chrome 2>/dev/null || true")
+        if not has_native:
+            logger.error(f"[-] Native TikTok App ({self.package_name}) is not installed on device!")
+            raise RuntimeError(f"Native TikTok App ({self.package_name}) is required. Chrome fallback has been disabled.")
 
-            # 2. Launch Native TikTok App directly via standard Activity Manager intent
-            logger.info(f"Launching TikTok Native App ({self.package_name})...")
-            self.shell(f"am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p {self.package_name}")
-            time.sleep(4)
-            self.dismiss_popups()
+        # 1. Permanently disable Chrome to ensure native intent handling
+        self.shell("pm disable-user --user 0 com.android.chrome 2>/dev/null || true")
+        self.shell("pm hide com.android.chrome 2>/dev/null || true")
 
-            # 3. Route directly into Live Room
-            if target_room_id:
-                logger.info(f"Navigating to Live Room ID: {target_room_id}...")
-                self.shell(f'am start -a android.intent.action.VIEW -d "snssdk1233://live?room_id={target_room_id}" {self.package_name}')
-                time.sleep(3)
-            elif target_url:
-                logger.info(f"Navigating to Live URL: {target_url}...")
-                self.shell(f'am start -a android.intent.action.VIEW -d "{target_url}" {self.package_name}')
-                time.sleep(3)
-        else:
-            # 4. Fallback: Enable Chrome and open live stream URL directly
-            logger.info("TikTok native app not installed. Enabling Chrome for live stream viewing...")
-            self.shell("pm enable com.android.chrome 2>/dev/null || true")
-            self.shell("pm unhide com.android.chrome 2>/dev/null || true")
-            time.sleep(1)
-            launch_url = target_url or (f"https://www.tiktok.com/@{target_user}/live" if target_user else "https://www.tiktok.com/live")
-            logger.info(f"Launching Chrome browser with URL: {launch_url}")
-            self.shell(f'am start -n com.android.chrome/com.google.android.apps.chrome.Main -a android.intent.action.VIEW -d "{launch_url}"')
-            time.sleep(4)
+        # 2. Launch Native TikTok App directly via standard Activity Manager intent
+        logger.info(f"Launching TikTok Native App ({self.package_name})...")
+        self.shell(f"am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p {self.package_name}")
+        time.sleep(4)
+        self.dismiss_popups()
+
+        # 3. Route directly into Live Room
+        if target_room_id:
+            logger.info(f"Navigating to Live Room ID: {target_room_id}...")
+            self.shell(f'am start -a android.intent.action.VIEW -d "snssdk1233://live?room_id={target_room_id}" {self.package_name}')
+            time.sleep(3)
+        elif target_url:
+            logger.info(f"Navigating to Live URL: {target_url}...")
+            self.shell(f'am start -a android.intent.action.VIEW -d "{target_url}" {self.package_name}')
+            time.sleep(3)
 
         self.dismiss_popups()
 
@@ -649,13 +646,14 @@ class ADBController:
         return any(k in out for k in ["live", "mainactivity", "feed", "aweme"])
 
     def _is_tiktok_in_foreground(self) -> bool:
-        """Checks if TikTok (or browser fallback) is currently the foreground active app."""
+        """Checks if native TikTok is currently the foreground active app."""
         out = self.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'")
-        return (self.package_name in out or 
-                "com.android.chrome" in out or 
-                "com.google.android.apps.chrome" in out or 
-                "org.chromium" in out or
-                "com.ss.android.ugc" in out)
+        return any(pkg in out for pkg in [
+            self.package_name,
+            "com.zhiliaoapp.musically",
+            "com.zhiliaoapp.musically.go",
+            "com.ss.android.ugc.trill"
+        ])
 
     def _is_login_screen_active(self) -> bool:
         """Checks if TikTok's Login/SignUp modal is currently blocking the screen."""
@@ -665,12 +663,8 @@ class ADBController:
         """Dismisses common prompts (Full-screen tooltips, System ANRs, Notifications, Cookie consents) using UI Inspection."""
         logger.info("Inspecting UI hierarchy to dismiss modal dialogs...")
         
-        # 1. Dismiss Android Immersive / Full-screen tooltips ("Got it" / "OK")
+        # 1. Dismiss Android Immersive / Full-screen tooltips ("Got it" / "OK" / "Agree")
         if self.click_element(text="Got it") or self.click_element(text="OK") or self.click_element(text="Agree"):
-            time.sleep(0.5)
-
-        # Chrome First-Run Dialogs
-        if self.click_element(text="Accept & continue") or self.click_element(text="No thanks") or self.click_element(text="Not now"):
             time.sleep(0.5)
 
         # 2. Dismiss System ANR Dialogs if present by exact button click
