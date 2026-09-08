@@ -32,9 +32,8 @@ class AppConfig:
         self.ldplayer_adb_host: str = os.getenv("LDPLAYER_ADB_HOST", "127.0.0.1")
         self.ldplayer_adb_port: Optional[int] = int(os.getenv("LDPLAYER_ADB_PORT")) if os.getenv("LDPLAYER_ADB_PORT") else None
         self.adb_device_id: Optional[str] = os.getenv("ADB_DEVICE_ID", None)
-        self.tiktok_package: str = os.getenv("TIKTOK_PACKAGE", "com.zhiliaoapp.musically")
-        self.tiktok_apk_url: Optional[str] = os.getenv("TIKTOK_APK_URL", None)
-        self.custom_apk_url: Optional[str] = self.tiktok_apk_url
+        self.tiktok_apk_url: str = os.getenv("TIKTOK_APK_URL") or "https://api.fgos.site/tiktok/assets/tiktok.apk"
+        self.custom_apk_url: str = self.tiktok_apk_url
         
         # Network / VPN / Proxy / Backend
         self.vpn_provider: str = os.getenv("VPN_PROVIDER", "none").lower() # none, nordvpn, pia
