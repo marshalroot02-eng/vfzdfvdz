@@ -16,7 +16,7 @@ class ADBController:
         self.config = config
         self.device_id = config.adb_device_id
         self.adb_bin = self._locate_adb()
-        self.package_name = config.tiktok_package
+        self.package_name = getattr(config, 'tiktok_package', None) or "com.zhiliaoapp.musically"
         self.screen_width = 1080
         self.screen_height = 2400
         self.screen_density = 420
@@ -355,55 +355,29 @@ class ADBController:
         if match_user:
             username = match_user.group(1)
 
+        # If room_id is missing but username exists, fetch the live web page to resolve exact room_id
+        if not room_id and username:
+            try:
+                import requests
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                }
+                live_target = f"https://www.tiktok.com/@{username}/live"
+                resp = requests.get(live_target, headers=headers, timeout=8)
+                if resp.status_code == 200 and resp.text:
+                    m = re.search(r'"roomId":"(\d+)"', resp.text)
+                    if m:
+                        room_id = m.group(1)
+                        logger.info(f"[+] Resolved live room_id '{room_id}' for creator @{username} via live endpoint")
+            except Exception as e:
+                logger.debug(f"Could not resolve live room_id from @{username}/live: {e}")
+
         return resolved_url, room_id, username
 
-    def dump_ui_hierarchy(self) -> Optional[str]:
-        """Dumps live Android UI XML hierarchy (equivalent to inspecting DOM in browsers)."""
-        tmp_xml = "/sdcard/window_dump.xml"
-        self.shell(f"uiautomator dump {tmp_xml}")
-        xml_content = self.shell(f"cat {tmp_xml}")
-        return xml_content
-
-    def find_element(self, text: Optional[str] = None, resource_id: Optional[str] = None, content_desc: Optional[str] = None) -> Optional[Tuple[int, int]]:
-        """
-        Finds exact UI element on screen by text, resource-id, or content-desc.
-        Returns the exact center (X, Y) pixel coordinates of the element's bounding box [x1,y1][x2,y2].
-        """
-        import xml.etree.ElementTree as ET
-        xml_data = self.dump_ui_hierarchy()
-        if not xml_data or "<hierarchy" not in xml_data:
-            return None
-        try:
-            root = ET.fromstring(xml_data)
-            for node in root.iter("node"):
-                node_text = node.attrib.get("text", "")
-                node_id = node.attrib.get("resource-id", "")
-                node_desc = node.attrib.get("content-desc", "")
-                bounds = node.attrib.get("bounds", "")
-
-                match = False
-                if text and text.lower() in node_text.lower(): match = True
-                if resource_id and resource_id.lower() in node_id.lower(): match = True
-                if content_desc and content_desc.lower() in node_desc.lower(): match = True
-
-                if match and bounds:
-                    m = re.findall(r"\[(\d+),(\d+)\]", bounds)
-                    if len(m) == 2:
-                        x1, y1 = int(m[0][0]), int(m[0][1])
-                        x2, y2 = int(m[1][0]), int(m[1][1])
-                        return (x1 + x2) // 2, (y1 + y2) // 2
-        except Exception as e:
-            logger.debug(f"UI parse notice: {e}")
-        return None
-
-    def click_element(self, text: Optional[str] = None, resource_id: Optional[str] = None, content_desc: Optional[str] = None) -> bool:
-        """Finds and clicks an exact UI element by its selector with zero guessing."""
-        coords = self.find_element(text=text, resource_id=resource_id, content_desc=content_desc)
-        if coords:
-            logger.info(f"Targeted element found at ({coords[0]}, {coords[1]}). Clicking...")
-            self.shell(f"input tap {coords[0]} {coords[1]}")
-            return True
-        return False
+    def open_live_stream(self, stream_url: str) -> bool:
+        """Alias for launch_live_stream to support dynamic target switching."""
+        return self.launch_live_stream(stream_url)
 
     def launch_live_stream(self, stream_url: str, room_id: Optional[str] = None, stream_user: Optional[str] = None) -> bool:
         """
@@ -425,9 +399,10 @@ class ADBController:
             logger.error(f"[-] Native TikTok App ({self.package_name}) is not installed on device!")
             raise RuntimeError(f"Native TikTok App ({self.package_name}) is required. Chrome fallback has been disabled.")
 
-        # 1. Permanently disable Chrome to ensure native intent handling
+        # 1. Permanently disable Chrome to ensure native intent handling & pre-grant notifications
         self.shell("pm disable-user --user 0 com.android.chrome 2>/dev/null || true")
         self.shell("pm hide com.android.chrome 2>/dev/null || true")
+        self.shell(f"pm grant {self.package_name} android.permission.POST_NOTIFICATIONS 2>/dev/null || true")
 
         # 2. Launch Native TikTok App directly via standard Activity Manager intent
         logger.info(f"Launching TikTok Native App ({self.package_name})...")
@@ -439,6 +414,10 @@ class ADBController:
         if target_room_id:
             logger.info(f"Navigating to Live Room ID: {target_room_id}...")
             self.shell(f'am start -a android.intent.action.VIEW -d "snssdk1233://live?room_id={target_room_id}" {self.package_name}')
+            time.sleep(3)
+        elif target_user:
+            logger.info(f"Navigating to Live creator @{target_user}/live...")
+            self.shell(f'am start -a android.intent.action.VIEW -d "https://www.tiktok.com/@{target_user}/live" {self.package_name}')
             time.sleep(3)
         elif target_url:
             logger.info(f"Navigating to Live URL: {target_url}...")
