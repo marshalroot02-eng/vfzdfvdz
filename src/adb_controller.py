@@ -257,11 +257,23 @@ class ADBController:
         target_pkg = package_name or getattr(self.config, 'tiktok_package', 'com.zhiliaoapp.musically')
         out = self.shell("pm list packages")
 
+        # Helper to parse exact package names from 'package:com.example.app'
+        def parse_packages(raw_out: str) -> set:
+            pkgs = set()
+            for line in raw_out.splitlines():
+                line = line.strip()
+                if line.startswith("package:"):
+                    pkgs.add(line.split("package:", 1)[1].strip())
+            return pkgs
+
+        installed = parse_packages(out)
+
         # Purge TikTok Lite if present on emulator image so real TikTok runs exclusively
-        if "package:com.zhiliaoapp.musically.go" in out:
+        if "com.zhiliaoapp.musically.go" in installed:
             logger.info("Purging stale TikTok Lite package (com.zhiliaoapp.musically.go) from device...")
             self.shell("pm uninstall com.zhiliaoapp.musically.go")
             out = self.shell("pm list packages")
+            installed = parse_packages(out)
 
         candidate_packages = [
             target_pkg,
@@ -269,7 +281,7 @@ class ADBController:
             "com.ss.android.ugc.trill"
         ]
         for pkg in candidate_packages:
-            if pkg and f"package:{pkg}" in out:
+            if pkg and pkg in installed:
                 self.package_name = pkg
                 return True
         return False
@@ -280,7 +292,11 @@ class ADBController:
             return False
         try:
             target_path = apk_path_or_url.strip()
-            if target_path.startswith("http://") or target_path.startswith("https://"):
+            # If pre-downloaded APK exists in /tmp/tiktok.apk, use it immediately
+            if (target_path.startswith("http://") or target_path.startswith("https://")) and os.path.exists("/tmp/tiktok.apk"):
+                logger.info("Found pre-downloaded APK at /tmp/tiktok.apk; using local copy.")
+                target_path = "/tmp/tiktok.apk"
+            elif target_path.startswith("http://") or target_path.startswith("https://"):
                 import requests
                 logger.info(f"Downloading APK from {target_path} ...")
                 local_apk = os.path.join(os.getcwd(), "app_download.apk")
