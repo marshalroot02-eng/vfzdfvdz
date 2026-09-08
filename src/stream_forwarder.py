@@ -99,6 +99,14 @@ class ScrcpyStreamForwarder:
         res = subprocess.run(["adb", "forward", f"tcp:{SCRCPY_PORT}", "localabstract:scrcpy"], capture_output=True, text=True)
         logger.info(f"[ADB_FORWARD_CREATED] Port forward active: tcp:{SCRCPY_PORT} -> localabstract:scrcpy ({res.stdout.strip()})")
 
+        # 2. Check if scrcpy-server.jar exists on device; if not, invoke setup_scrcpy.sh
+        chk = subprocess.run(["adb", "shell", "test -f /data/local/tmp/scrcpy-server.jar"], capture_output=True)
+        if chk.returncode != 0:
+            logger.info("[SCRCPY_AUTO_INSTALL] scrcpy-server.jar not on device. Running scripts/setup_scrcpy.sh...")
+            setup_script = os.path.join(os.path.dirname(__file__), "..", "scripts", "setup_scrcpy.sh")
+            if os.path.exists(setup_script):
+                subprocess.run(["bash", setup_script], capture_output=True, text=True)
+
         if self.scrcpy_process and self.scrcpy_process.poll() is None:
             return
 
