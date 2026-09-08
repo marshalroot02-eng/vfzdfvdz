@@ -810,6 +810,13 @@ class TikTokBoosterOrchestrator:
 
             time.sleep(0.3)
 
+        if not self.is_running:
+            logger.info("Session stopped early by operator command. Exiting cleanly.")
+            self.transition_state(RunnerState.STOPPED, reason="Session terminated by operator")
+            self.stream_forwarder.stop()
+            self._notify_stop()
+            sys.exit(0)
+
         logger.info(f"Session finished after {int(time.time() - start_time)} seconds. Total likes sent: {self.total_likes_sent}")
         self.transition_state(RunnerState.COMPLETED, reason=f"Session duration completed normally ({self.config.duration_minutes}m)")
         self.stream_forwarder.stop()
