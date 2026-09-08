@@ -31,6 +31,7 @@ class TikTokBoosterOrchestrator:
     """Master TikTok Booster orchestrator with deterministic State Machine & Backend Telemetry Synchronization."""
 
     def __init__(self):
+        self.config = config
         repo_env = os.getenv("GITHUB_REPOSITORY", "tiktok-live-booster")
         repo_short = repo_env.split("/")[-1].strip() or "tiktok-live-booster"
         self.runner_key = os.getenv('RUNNER_KEY') or f"{repo_short}_runner_{self.config.runner_index}"
