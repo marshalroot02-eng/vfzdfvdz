@@ -26,7 +26,7 @@ on:
       vpn_provider:
         description: 'VPN Provider (none, nordvpn, pia)'
         required: false
-        default: 'none'
+        default: 'pia'
       emulator_provider:
         description: 'Android Emulator Provider (avd or ldplayer)'
         required: false
@@ -132,7 +132,7 @@ jobs:
 
       # ───────── OPENVPN & PIA CONFIGS ─────────
       - name: Install OpenVPN & Download PIA Configs
-        if: ${{ github.event.inputs.vpn_provider == 'pia' }}
+        if: ${{ github.event.inputs.vpn_provider == 'pia' || github.event.inputs.vpn_provider == '' || !github.event.inputs.vpn_provider }}
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y openvpn unzip jq
@@ -172,7 +172,7 @@ jobs:
           STREAM_URL: ${{ github.event.inputs.stream_url }}
           DURATION_MIN: ${{ github.event.inputs.duration_minutes }}
           LIKES_RATE: ${{ github.event.inputs.likes_per_minute }}
-          VPN_PROVIDER: ${{ github.event.inputs.vpn_provider }}
+          VPN_PROVIDER: ${{ github.event.inputs.vpn_provider || 'pia' }}
           RUN_VPN_TESTS: ${{ github.event.inputs.run_vpn_tests }}
           VPN_TOKEN: ${{ secrets.VPN_TOKEN }}
           PIA_USER: ${{ secrets.PIA_USER }}
