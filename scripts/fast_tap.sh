@@ -16,8 +16,8 @@ TOTAL_LIKES=0
 echo "Starting native TikTok Live auto-tap loop at ($X, $Y)..."
 
 while [ $(date +%s) -lt $END_TIME ]; do
-    # Verify TikTok is foreground window before tapping
-    if ! dumpsys window | grep -E 'mCurrentFocus|mFocusedApp' | grep -q 'com.zhiliaoapp.musically'; then
+    # Verify Native TikTok is foreground window before tapping
+    if ! dumpsys window | grep -E 'mCurrentFocus|mFocusedApp' | grep -qE 'com\.zhiliaoapp\.musically|com\.zhiliaoapp\.musically\.go|com\.ss\.android\.ugc\.trill'; then
         sleep 1
         continue
     fi
