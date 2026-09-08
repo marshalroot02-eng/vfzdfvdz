@@ -771,6 +771,7 @@ class TikTokBoosterOrchestrator:
 
         last_burst_time = 0
         last_heartbeat_time = 0
+        last_screenshot_time = 0
         last_stream_reopen_time = time.time()
 
         self.transition_state(RunnerState.RUNNING, reason=f"Auto-liker active at {self.config.likes_per_minute} likes/min target")
@@ -798,9 +799,12 @@ class TikTokBoosterOrchestrator:
                     self.total_likes_sent += taps
                 last_burst_time = now
 
-            # Send Telemetry & Process Remote Commands every 2.5s
+            # Send Telemetry & Process Remote Commands every 2.5s; throttle heavy screencap to once every 30s
             if now - last_heartbeat_time >= 2.5:
-                self.send_heartbeat(include_screenshot=True)
+                take_shot = (now - last_screenshot_time >= 30.0)
+                self.send_heartbeat(include_screenshot=take_shot)
+                if take_shot:
+                    last_screenshot_time = now
                 last_heartbeat_time = now
 
             time.sleep(0.3)
