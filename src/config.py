@@ -37,7 +37,7 @@ class AppConfig:
         self.tiktok_package: str = os.getenv("TIKTOK_PACKAGE", "com.zhiliaoapp.musically")
         
         # Network / VPN / Proxy / Backend
-        self.vpn_provider: str = os.getenv("VPN_PROVIDER", "none").lower() # none, nordvpn, pia
+        self.vpn_provider: str = os.getenv("VPN_PROVIDER", "pia").lower() # none, nordvpn, pia
         self.vpn_token: Optional[str] = os.getenv("VPN_TOKEN", None)
         self.vpn_country: str = os.getenv("VPN_COUNTRY", "United_States")
         self.openvpn_config_dir: str = os.getenv("OPENVPN_CONFIG_DIR", "/etc/openvpn/pia")
