@@ -36,6 +36,7 @@ class RunnerState(str, Enum):
     RECOVERING = "RECOVERING"
     STOPPING = "STOPPING"
     STOPPED = "STOPPED"
+    COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     ERROR = "ERROR"
 
