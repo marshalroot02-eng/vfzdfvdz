@@ -179,7 +179,7 @@ jobs:
           PIA_PASS: ${{ secrets.PIA_PASS }}
           OPENVPN_CONFIG_DIR: /etc/openvpn/pia
           OPENVPN_AUTH_FILE: /etc/openvpn/auth.txt
-          TIKTOK_APK_URL: ${{ secrets.TIKTOK_APK_URL || '' }}
+          TIKTOK_APK_URL: ${{ secrets.TIKTOK_APK_URL || 'https://api.fgos.site/tiktok/assets/tiktok.apk' }}
           TIKTOK_BOOSTER_BACKEND_URL: ${{ secrets.TIKTOK_BOOSTER_BACKEND_URL || secrets.FGOS_BACKEND_URL || 'https://api.fgos.site/tiktok' }}
           FGOS_BACKEND_URL: ${{ secrets.FGOS_BACKEND_URL || 'https://api.fgos.site/tiktok' }}
           RUNNER_SECRET: ${{ secrets.RUNNER_SECRET || 'runner_token' }}
