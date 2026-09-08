@@ -168,6 +168,7 @@ jobs:
           script: bash ./scripts/run_emulator_session.sh
         env:
           RUNNER_INDEX: ${{ matrix.runner_id }}
+          RUNNER_KEY: ${{ github.event.repository.name }}_runner_${{ matrix.runner_id }}
           STREAM_URL: ${{ github.event.inputs.stream_url }}
           DURATION_MIN: ${{ github.event.inputs.duration_minutes }}
           LIKES_RATE: ${{ github.event.inputs.likes_per_minute }}
