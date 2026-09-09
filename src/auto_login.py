@@ -292,7 +292,7 @@ class AutoLoginManager:
         return False
 
     def _dismiss_initial_onboarding(self, width: int = 720, height: int = 1280) -> None:
-        """Dismisses splash, terms, interest selection, and tutorial swipe overlays."""
+        """Dismisses splash, terms, interest selection, tutorial swipe overlays, and birthdate modal."""
         w = self.adb.screen_width or width or 720
         h = self.adb.screen_height or height or 1280
         if self.adb.click_element(text="Agree and continue") or self.adb.click_element(text="Agree"):
@@ -301,14 +301,17 @@ class AutoLoginManager:
             time.sleep(1.5)
         if self.adb.click_element(text="Start watching"):
             time.sleep(1.5)
+        # Handle birthdate onboarding modal if prompted
+        self.adb.handle_birthdate_modal()
         # Swipe up to clear initial tutorial overlay within actual screen dimensions
         self.adb.shell(f"input swipe {w // 2} {int(h * 0.75)} {w // 2} {int(h * 0.25)} 250")
         time.sleep(1)
         self.adb.dismiss_popups()
 
     def _dismiss_post_login_prompts(self) -> None:
-        """Dismisses post-login prompts: Save info, Notifications, Sync contacts."""
+        """Dismisses post-login prompts: Save info, Notifications, Sync contacts, Birthdate modal."""
         time.sleep(1.5)
+        self.adb.handle_birthdate_modal()
         if self.adb.click_element(text="Save") or self.adb.click_element(text="Not now"):
             time.sleep(1)
         if self.adb.click_element(text="Don't allow") or self.adb.click_element(text="Deny"):
