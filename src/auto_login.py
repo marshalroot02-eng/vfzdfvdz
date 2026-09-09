@@ -97,12 +97,19 @@ class AutoLoginManager:
         # 6. Navigate into Login Screen
         report("LOGIN_REQUIRED", "Detecting login screen and navigating to Email login tab")
         
+        # Check if birthdate modal is already on screen
+        if self.adb.handle_birthdate_modal():
+            time.sleep(2)
+
         # Check if already on login screen, else tap Profile in bottom right
         if not self.adb.is_login_or_signup_screen():
             logger.info("Opening Profile tab to trigger login prompt...")
             if not self.adb.click_element(text="Profile"):
                 self.adb.shell(f"input tap {int(width * 0.90)} {int(height * 0.96)}")
             time.sleep(3)
+
+        if self.adb.handle_birthdate_modal():
+            time.sleep(2)
 
         # Check if on "Sign up for TikTok" screen, and click "Already have an account? Log in"
         ui_text = self.adb.get_ui_text_content().lower()
@@ -119,6 +126,10 @@ class AutoLoginManager:
                 self.adb.click_element(content_desc="Use phone / email / username")):
             self.adb.shell(f"input tap {width // 2} {int(height * 0.36)}")
         time.sleep(3)
+
+        # If clicking "Use phone / email / username" presented "When's your birthdate?", resolve it!
+        if self.adb.handle_birthdate_modal():
+            time.sleep(2.5)
 
         # Select 'Email / Username' tab
         logger.info("Selecting 'Email / Username' tab...")
@@ -156,6 +167,8 @@ class AutoLoginManager:
         wait_start = time.time()
         
         while time.time() - wait_start < 10:
+            if self.adb.handle_birthdate_modal():
+                time.sleep(2)
             ui_content = self.adb.get_ui_text_content().lower()
             
             # Check if "Log in with password" switch is present
@@ -204,6 +217,8 @@ class AutoLoginManager:
         outcome_start = time.time()
         
         while time.time() - outcome_start < 35:
+            if self.adb.handle_birthdate_modal():
+                time.sleep(2)
             ui_content = self.adb.get_ui_text_content().lower()
             logger.info(f"[Auth Monitor] Active UI elements summary: {ui_content[:100]}...")
             report("LOGIN_SUBMITTING", "Evaluating authentication response...")
