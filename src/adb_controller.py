@@ -682,38 +682,50 @@ class ADBController:
     def handle_birthdate_modal(self) -> bool:
         """
         Detects and resolves TikTok's 'When's your birthdate?' onboarding modal.
-        Scrolls the year wheel down to an adult birth year (>18) and clicks Continue.
+        Randomly selects an adult birthdate between 1990 and 2003 (random month, day, year) and clicks Continue.
         """
         ui_text = self.get_ui_text_content().lower()
-        if not any(k in ui_text for k in ["when's your birthdate", "enter your birthdate", "your birthdate won't be shown"]):
+        if not any(k in ui_text for k in ["when's your birthdate", "enter your birthdate", "your birthdate won't be shown", "birthday"]):
             return False
 
-        logger.info("🎂 [Onboarding] 'When's your birthdate?' modal detected. Selecting adult birth year...")
+        logger.info("🎂 [Onboarding] 'When's your birthdate?' modal detected. Selecting random date (1990-2003)...")
         w = self.screen_width or 720
         h = self.screen_height or 1280
 
-        # Year wheel column is approximately at 67% screen width
-        year_x = int(w * 0.67)
-        wheel_top = int(h * 0.52)
-        wheel_bottom = int(h * 0.68)
+        # Touch coordinates for Month, Day, and Year picker wheels
+        month_x = int(w * 0.34)
+        day_x = int(w * 0.50)
+        year_x = int(w * 0.66)
+        wheel_top = int(h * 0.47)
+        wheel_bottom = int(h * 0.58)
 
-        # Swipe down multiple times on the year wheel to scroll backwards into 1990s/2000s (>18 years old)
-        for _ in range(6):
-            self.shell(f"input swipe {year_x} {wheel_top} {year_x} {wheel_bottom} 120")
-            time.sleep(0.2)
+        # 1. Randomize Month (swipe down 1-4 times)
+        for _ in range(random.randint(1, 4)):
+            self.shell(f"input swipe {month_x} {wheel_top} {month_x} {wheel_bottom} 100")
+            time.sleep(0.12)
 
-        time.sleep(0.5)
+        # 2. Randomize Day (swipe down 2-5 times)
+        for _ in range(random.randint(2, 5)):
+            self.shell(f"input swipe {day_x} {wheel_top} {day_x} {wheel_bottom} 100")
+            time.sleep(0.12)
+
+        # 3. Scroll Year backwards by 22-35 years from 2025 into 1990-2003 (7-10 swipes down)
+        for _ in range(random.randint(7, 10)):
+            self.shell(f"input swipe {year_x} {wheel_top} {year_x} {wheel_bottom} 100")
+            time.sleep(0.12)
+
+        time.sleep(0.8)
 
         # Click the red Continue button
         if not self.click_element(text="Continue"):
-            self.shell(f"input tap {w // 2} {int(h * 0.735)}")
-        time.sleep(1.5)
+            self.shell(f"input tap {w // 2} {int(h * 0.715)}")
+        time.sleep(1.8)
 
         # Handle optional confirmation dialog ("Are you X years old? / Confirm")
         if self.click_element(text="Confirm") or self.click_element(text="OK") or self.click_element(text="Continue"):
             time.sleep(1.0)
 
-        logger.info("🎂 [Onboarding] Birthdate modal submitted successfully.")
+        logger.info("🎂 [Onboarding] Birthdate modal resolved with adult year (1990-2003).")
         return True
 
     def dismiss_popups(self) -> None:
