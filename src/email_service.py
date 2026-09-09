@@ -47,9 +47,11 @@ class GmailVerificationService:
                         for response_part in msg_data:
                             if isinstance(response_part, tuple):
                                 msg = email.message_from_bytes(response_part[1])
-                                subject, encoding = decode_header(msg.get("Subject", ""))[0]
-                                if isinstance(subject, bytes):
-                                    subject = subject.decode(encoding or "utf-8", errors="ignore")
+                                subject_parts = decode_header(msg.get("Subject", "") or "")
+                                subject = "".join(
+                                    p.decode(enc or "utf-8", errors="ignore") if isinstance(p, bytes) else str(p)
+                                    for p, enc in subject_parts
+                                )
 
                                 # Extract body text
                                 body = ""
