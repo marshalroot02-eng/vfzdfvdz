@@ -2,8 +2,8 @@
 # Native on-device fast tap auto-clicker for TikTok Live Mobile
 # Usage: /data/local/tmp/fast_tap.sh <center_x> <center_y> <jitter_px> <taps_per_burst> <burst_sleep_sec> <duration_sec>
 
-X=${1:-540}
-Y=${2:-1100}
+X=${1:-450}
+Y=${2:-650}
 JITTER=${3:-25}
 BURST_COUNT=${4:-10}
 BURST_SLEEP=${5:-2}
