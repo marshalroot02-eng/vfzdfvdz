@@ -244,9 +244,13 @@ class AutoLoginManager:
                         self.adb.shell(f"input text {code}")
                         time.sleep(1)
                         self.adb.hide_keyboard()
-                        time.sleep(2)
+                        time.sleep(1)
+                        self.adb.shell("input keyevent 66")
+                        if not self.adb.click_element(text="Log in"):
+                            if not self.adb.click_element(text="Next"):
+                                self.adb.click_element(text="Verify")
                         report("LOGIN_SUBMITTING", f"Submitted 2FA code {code[:2]}****")
-                        for _ in range(4):
+                        for _ in range(8):
                             time.sleep(1.5)
                             self._dismiss_post_login_prompts()
                             if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
@@ -325,12 +329,22 @@ class AutoLoginManager:
         self.adb.dismiss_popups()
 
     def _dismiss_post_login_prompts(self) -> None:
-        """Dismisses post-login prompts: Save info, Notifications, Sync contacts, Birthdate modal."""
-        time.sleep(1.5)
+        """Dismisses post-login prompts: Save info, Notifications, Sync contacts, Birthdate modal, Tutorial."""
+        time.sleep(1.0)
         self.adb.handle_birthdate_modal()
-        if self.adb.click_element(text="Save") or self.adb.click_element(text="Not now"):
-            time.sleep(1)
-        if self.adb.click_element(text="Don't allow") or self.adb.click_element(text="Deny"):
-            time.sleep(1)
-        if self.adb.click_element(text="Not now") or self.adb.click_element(text="Cancel"):
-            time.sleep(1)
+        for prompt_btn in [
+            "Save", "Not now", "Don't allow", "Deny", "Skip", "Start watching",
+            "Got it", "Cancel", "Never", "While using the app", "Only this time",
+            "Dismiss", "Later", "Close"
+        ]:
+            if self.adb.click_element(text=prompt_btn):
+                time.sleep(0.6)
+                self.adb.handle_birthdate_modal()
+
+        # Dismiss swipe up tutorial if shown
+        ui = self.adb.get_ui_text_content().lower()
+        if "swipe up" in ui:
+            w = self.adb.screen_width or 720
+            h = self.adb.screen_height or 1280
+            self.adb.shell(f"input swipe {w // 2} {int(h * 0.75)} {w // 2} {int(h * 0.25)} 250")
+            time.sleep(0.8)
