@@ -569,13 +569,23 @@ class TikTokBoosterOrchestrator:
                 logger.info(f"🔄 [Account Rotation] Evaluating Candidate #{idx+1}/{len(candidate_accounts)}: {masked_email} (ID #{acc_id})")
                 logger.info(f"{'='*60}")
 
-                # 1. Rotate VPN IP for subsequent attempts to provide clean IP
-                if self.config.vpn_provider == "pia" and idx > 0:
-                    self.add_step_log("VPN", f"Rotating VPN IP for Candidate #{idx+1}")
-                    logger.info(f"Rotating PIA VPN IP for Candidate #{idx+1}...")
-                    self.vpn.rotate_vpn()
-                    self.vpn.verify_android_egress(self.adb)
-                    self._refresh_network_telemetry(force=True)
+                # 1. Connect or align to dedicated account VPN location
+                if self.config.vpn_provider == "pia":
+                    target_loc = account.get("vpn_location") or self.config.vpn_location
+                    if target_loc:
+                        exact_cfg = self.vpn.get_exact_location_config(target_loc)
+                        if exact_cfg and self.vpn.current_location != os.path.basename(exact_cfg).replace('.ovpn', ''):
+                            self.add_step_log("VPN", f"Aligning to dedicated account city: {target_loc}")
+                            logger.info(f"🌐 [VPN Pinning] Connecting to account city '{target_loc}' ({os.path.basename(exact_cfg)})...")
+                            self.vpn.connect_openvpn(exact_cfg)
+                            self.vpn.verify_android_egress(self.adb)
+                            self._refresh_network_telemetry(force=True)
+                    elif idx > 0:
+                        self.add_step_log("VPN", f"Rotating VPN IP for Candidate #{idx+1}")
+                        logger.info(f"Rotating PIA VPN IP for Candidate #{idx+1}...")
+                        self.vpn.rotate_vpn()
+                        self.vpn.verify_android_egress(self.adb)
+                        self._refresh_network_telemetry(force=True)
 
                 # 2. Clean slate: Wipe app data
                 self.add_step_log("CLEANUP", f"Wiping app data for clean login slate")
