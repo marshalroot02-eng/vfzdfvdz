@@ -83,8 +83,8 @@ class AutoLoginManager:
         self.adb.shell(f"am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p {self.adb.package_name}")
         time.sleep(6)
 
-        width = self.adb.screen_width or 1080
-        height = self.adb.screen_height or 2400
+        width = self.adb.screen_width or 720
+        height = self.adb.screen_height or 1280
 
         # 5. Dismiss initial onboarding prompts (Terms, Interests, Swipe Up)
         self._dismiss_initial_onboarding(width, height)
@@ -291,16 +291,18 @@ class AutoLoginManager:
         self.adb.take_screenshot("login_failure_view.png")
         return False
 
-    def _dismiss_initial_onboarding(self, width: int = 1080, height: int = 2400) -> None:
+    def _dismiss_initial_onboarding(self, width: int = 720, height: int = 1280) -> None:
         """Dismisses splash, terms, interest selection, and tutorial swipe overlays."""
+        w = self.adb.screen_width or width or 720
+        h = self.adb.screen_height or height or 1280
         if self.adb.click_element(text="Agree and continue") or self.adb.click_element(text="Agree"):
             time.sleep(1.5)
         if self.adb.click_element(text="Skip") or self.adb.click_element(text="Choose your interests"):
             time.sleep(1.5)
         if self.adb.click_element(text="Start watching"):
             time.sleep(1.5)
-        # Swipe up to clear initial tutorial overlay
-        self.adb.shell(f"input swipe {width // 2} {int(height * 0.80)} {width // 2} {int(height * 0.20)} 250")
+        # Swipe up to clear initial tutorial overlay within actual screen dimensions
+        self.adb.shell(f"input swipe {w // 2} {int(h * 0.75)} {w // 2} {int(h * 0.25)} 250")
         time.sleep(1)
         self.adb.dismiss_popups()
 
