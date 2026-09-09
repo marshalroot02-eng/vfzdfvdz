@@ -28,6 +28,7 @@ class VPNService:
         self.provider = config.vpn_provider.lower()
         self.token = config.vpn_token
         self.country = config.vpn_country
+        self.location = getattr(config, "vpn_location", None) or os.getenv("VPN_LOCATION", None)
         self.openvpn_config_dir = config.openvpn_config_dir
         self.openvpn_auth_file = config.openvpn_auth_file
         self.openvpn_log_file = "/tmp/openvpn.log"
@@ -152,23 +153,76 @@ class VPNService:
             self.last_failure_reason = "OpenVPN initial connection failed or timed out"
         return success
 
+    def get_exact_location_config(self, target_location: str) -> Optional[str]:
+        """
+        Finds the exact .ovpn configuration matching a specific city/location (e.g. 'us_california', 'us_chicago').
+        Prevents location hopping by locking to a dedicated server profile.
+        """
+        if not target_location or not target_location.strip():
+            return None
+        if not self.available_configs:
+            self.available_configs = self._discover_openvpn_configs()
+
+        loc = target_location.strip().lower().replace(" ", "_")
+        target_name = f"{loc}.ovpn" if not loc.endswith(".ovpn") else loc
+
+        # 1. Exact filename match
+        for path in self.available_configs:
+            if os.path.basename(path).lower() == target_name:
+                return path
+
+        # 2. Substring/prefix match (e.g. 'california' matches 'us_california.ovpn')
+        for path in self.available_configs:
+            base = os.path.basename(path).lower().replace(".ovpn", "")
+            if loc == base or loc in base or base.endswith(f"_{loc}"):
+                return path
+
+        return None
+
+    def get_pinned_config_for_entity(self, entity_id: Optional[str] = None, country: Optional[str] = None, location: Optional[str] = None) -> Optional[str]:
+        """
+        Deterministically assigns and locks a specific city/location profile to an entity
+        (TikTok account username or runner_key) so it NEVER hops or switches locations across sessions.
+        """
+        target_loc = location or self.location
+        if target_loc:
+            exact = self.get_exact_location_config(target_loc)
+            if exact:
+                return exact
+
+        eligible = self._country_filtered_configs(country or self.country)
+        if not eligible:
+            return None
+
+        # Stable hash: Entity ALWAYS maps to the exact same config index across runs
+        pin_key = (entity_id or getattr(self.config, 'runner_key', None) or getattr(self.config, 'runner_id', '0')).strip().lower()
+        import hashlib
+        stable_idx = int(hashlib.md5(pin_key.encode('utf-8')).hexdigest(), 16) % len(eligible)
+        return eligible[stable_idx]
+
     def connect_openvpn(self, config_path: Optional[str] = None) -> bool:
-        """Connects via OpenVPN using the specified or random .ovpn config profile."""
+        """Connects via OpenVPN using the specified or deterministic .ovpn config profile."""
         if not self.available_configs:
             self.available_configs = self._discover_openvpn_configs()
 
         if not config_path:
-            eligible = self._country_filtered_configs(self.country)
-            unused = [c for c in eligible if c not in self.used_configs]
-            if not unused:
-                self.used_configs.difference_update(eligible)
-                unused = eligible
-            if not unused:
-                logger.error("❌ [PIA VPN] No .ovpn configuration files available.")
-                self.state = VPNState.FAILED
-                self.last_failure_reason = "No .ovpn configuration files found"
-                return False
-            config_path = random.choice(unused)
+            # 1. Attempt deterministic pinning per runner/account so location never switches
+            pin_key = getattr(self.config, 'runner_key', None) or getattr(self.config, 'runner_id', '0')
+            config_path = self.get_pinned_config_for_entity(entity_id=pin_key, country=self.country, location=self.location)
+
+            # 2. Fallback to first available unused config
+            if not config_path:
+                eligible = self._country_filtered_configs(self.country)
+                unused = [c for c in eligible if c not in self.used_configs]
+                if not unused:
+                    self.used_configs.difference_update(eligible)
+                    unused = eligible
+                if not unused:
+                    logger.error("❌ [PIA VPN] No .ovpn configuration files available.")
+                    self.state = VPNState.FAILED
+                    self.last_failure_reason = "No .ovpn configuration files found"
+                    return False
+                config_path = unused[0]
 
         self.used_configs.add(config_path)
         server_name = os.path.basename(config_path).replace('.ovpn', '')
@@ -339,12 +393,17 @@ class VPNService:
         has_internet = False
         match = False
 
-        # 1. Query IP inside Android emulator via ADB
+        # 1. Query IP inside Android emulator via ADB (supports Toybox wget, busybox wget, or curl)
         try:
-            raw = adb.shell("curl -s -m 10 http://ip-api.com/json/?fields=query,city,country,isp")
+            cmd = (
+                "toybox wget -q -O - 'http://ip-api.com/json/?fields=query,city,country,isp' 2>/dev/null || "
+                "wget -q -O - 'http://ip-api.com/json/?fields=query,city,country,isp' 2>/dev/null || "
+                "curl -s -m 8 'http://ip-api.com/json/?fields=query,city,country,isp'"
+            )
+            raw = adb.shell(cmd)
             if raw and "{" in raw:
                 try:
-                    data = json.loads(raw.strip())
+                    data = json.loads(raw[raw.find("{"):raw.rfind("}")+1])
                     android_ip = data.get("query", "Unknown")
                     android_isp = data.get("isp", "Unknown")
                     has_internet = True
@@ -355,7 +414,7 @@ class VPNService:
                         android_ip = m.group(1)
                         has_internet = True
         except Exception as e:
-            logger.debug(f"Android curl check notice: {e}")
+            logger.debug(f"Android egress check notice: {e}")
 
         # If curl failed inside emulator, test raw connectivity
         if not has_internet:
