@@ -78,10 +78,12 @@ class AutoLoginManager:
         if account.get("proxy"):
             self.adb.configure_proxy(account.get("proxy"))
 
-        # 4. Launch clean TikTok Application
+        # 4. Launch clean TikTok Application & Ensure Foreground
         report("STARTING", "Starting clean TikTok native Android activity")
-        self.adb.shell(f"am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p {self.adb.package_name}")
-        time.sleep(6)
+        if not self._ensure_tiktok_foreground():
+            logger.error(f"[-] TikTok could not be brought to foreground for {masked_acc}.")
+            report("LOGIN_FAILED", "TikTok failed to enter foreground")
+            return False
 
         width = self.adb.screen_width or 720
         height = self.adb.screen_height or 1280
@@ -96,6 +98,7 @@ class AutoLoginManager:
 
         # 6. Navigate into Login Screen
         report("LOGIN_REQUIRED", "Detecting login screen and navigating to Email login tab")
+        self._ensure_tiktok_foreground()
         
         # Check if birthdate modal is already on screen
         if self.adb.handle_birthdate_modal():
@@ -105,7 +108,8 @@ class AutoLoginManager:
         if not self.adb.is_login_or_signup_screen():
             logger.info("Opening Profile tab to trigger login prompt...")
             if not self.adb.click_element(text="Profile"):
-                self.adb.shell(f"input tap {int(width * 0.90)} {int(height * 0.96)}")
+                if self.adb._is_tiktok_in_foreground():
+                    self.adb.shell(f"input tap {int(width * 0.90)} {int(height * 0.96)}")
             time.sleep(3)
 
         if self.adb.handle_birthdate_modal():
@@ -116,7 +120,8 @@ class AutoLoginManager:
         if "sign up for tiktok" in ui_text or "already have an account" in ui_text:
             logger.info("Sign up screen detected. Clicking 'Log in' switch...")
             if not (self.adb.click_element(text="Log in") or self.adb.click_element(text="Already have an account")):
-                self.adb.shell(f"input tap {int(width * 0.70)} {int(height * 0.94)}")
+                if self.adb._is_tiktok_in_foreground():
+                    self.adb.shell(f"input tap {int(width * 0.70)} {int(height * 0.94)}")
             time.sleep(2.5)
 
         # Click "Use phone / email / username"
@@ -124,7 +129,8 @@ class AutoLoginManager:
         if not (self.adb.click_element(text="Use phone / email / username") or 
                 self.adb.click_element(text="Use phone") or 
                 self.adb.click_element(content_desc="Use phone / email / username")):
-            self.adb.shell(f"input tap {width // 2} {int(height * 0.36)}")
+            if self.adb._is_tiktok_in_foreground():
+                self.adb.shell(f"input tap {width // 2} {int(height * 0.36)}")
         time.sleep(3)
 
         # If clicking "Use phone / email / username" presented "When's your birthdate?", resolve it!
@@ -136,15 +142,22 @@ class AutoLoginManager:
         if not (self.adb.click_element(text="Email / Username") or 
                 self.adb.click_element(text="Email or username") or 
                 self.adb.click_element(text="Email")):
-            self.adb.shell(f"input tap {int(width * 0.72)} {int(height * 0.12)}")
+            if self.adb._is_tiktok_in_foreground():
+                self.adb.shell(f"input tap {int(width * 0.72)} {int(height * 0.12)}")
         time.sleep(2)
 
         # Focus Email input field & type username
         logger.info("Entering username/email into input field...")
-        if not (self.adb.click_element(text="Email or username") or 
-                self.adb.click_element(text="Enter email or username") or 
-                self.adb.click_element(resource_id="email_input")):
-            self.adb.shell(f"input tap {width // 2} {int(height * 0.20)}")
+        self._ensure_tiktok_foreground()
+        found_field = (self.adb.click_element(text="Email or username") or 
+                       self.adb.click_element(text="Enter email or username") or 
+                       self.adb.click_element(resource_id="email_input"))
+        if not found_field:
+            if self.adb._is_tiktok_in_foreground() and self.adb.is_login_or_signup_screen():
+                self.adb.shell(f"input tap {width // 2} {int(height * 0.20)}")
+            else:
+                logger.warning("[-] TikTok not in foreground/login state. Refusing blind tap to prevent home widget typing.")
+                return False
         time.sleep(1)
 
         clean_user = username.replace(" ", "").strip()
@@ -356,3 +369,27 @@ class AutoLoginManager:
             h = self.adb.screen_height or 1280
             self.adb.shell(f"input swipe {w // 2} {int(h * 0.75)} {w // 2} {int(h * 0.25)} 250")
             time.sleep(0.8)
+
+    def _ensure_tiktok_foreground(self) -> bool:
+        """Guarantees native TikTok is actively running in the foreground before performing UI actions."""
+        if self.adb._is_tiktok_in_foreground():
+            return True
+
+        logger.info("TikTok not in foreground. Dismissing any background overlays (Google search, etc.)...")
+        # Press Back key then Home key to close any open search widget or launcher overlay
+        self.adb.shell("input keyevent 4")  # Back
+        time.sleep(0.5)
+        self.adb.shell("input keyevent 3")  # Home
+        time.sleep(0.5)
+
+        for attempt in range(4):
+            logger.info(f"Bringing TikTok to foreground (Attempt {attempt+1}/4)...")
+            self.adb.shell(f"monkey -p {self.adb.package_name} -c android.intent.category.LAUNCHER 1")
+            self.adb.shell(f"am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p {self.adb.package_name}")
+            time.sleep(4)
+            if self.adb._is_tiktok_in_foreground():
+                logger.info(f"[+] TikTok confirmed in foreground on attempt {attempt+1}.")
+                return True
+
+        logger.error("[-] Failed to bring TikTok to foreground after 4 attempts.")
+        return False
