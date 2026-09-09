@@ -170,6 +170,14 @@ class AutoLoginManager:
             if self.adb.handle_birthdate_modal():
                 time.sleep(2)
             ui_content = self.adb.get_ui_text_content().lower()
+
+            # Immediate detection of rate limit right under email input!
+            if any(rate_msg in ui_content for rate_msg in ["maximum number of attempts", "too many attempts", "try again later", "frequent requests"]):
+                logger.error(f"[-] [LOGIN_RATE_LIMITED] TikTok rate limit reached for {masked_acc} ('Maximum attempts reached').")
+                self.last_failure_reason = "IP_RATE_LIMITED"
+                report("LOGIN_RATE_LIMITED", "Maximum number of attempts reached (IP rate-limited by TikTok)")
+                self.adb.take_screenshot("login_failure_view.png")
+                return False
             
             # Check if "Log in with password" switch is present
             if "log in with password" in ui_content:
