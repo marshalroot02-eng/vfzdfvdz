@@ -624,16 +624,17 @@ class TikTokBoosterOrchestrator:
                     # IP Circuit-Breaker: Prevent burning subsequent accounts on dirty/rate-limited IP!
                     if fail_reason == "IP_RATE_LIMITED":
                         if acc_id:
-                            self._report_account_cooldown(acc_id, "Maximum number of attempts reached (IP rate-limited by TikTok)", 30)
+                            self._report_account_cooldown(acc_id, "Maximum number of attempts reached (IP rate-limited by TikTok)", 60)
+                        self.add_step_log("COOLDOWN", f"Account {masked_email} placed in 60m auto-cooldown due to attempt limit", "WARNING")
 
                         can_rotate_ip = (self.config.vpn_provider == "pia") or any(c.get("proxy") for c in candidate_accounts[idx+1:])
-                        if not can_rotate_ip:
-                            self.add_step_log("CIRCUIT_BREAKER", "IP Rate-Limit detected ('Maximum attempts reached'). Halting rotation to protect remaining accounts!", "ERROR")
-                            logger.error("🛑 [IP Circuit Breaker] TikTok blocked egress IP with 'Maximum attempts reached'. Halting rotation to protect pool!")
-                            self.transition_state(RunnerState.LOGIN_RATE_LIMITED, reason="Halting account rotation: Egress IP rate-limited by TikTok ('Maximum attempts reached'). Remaining pool accounts protected.")
-                            break
-                        else:
-                            self.add_step_log("CIRCUIT_BREAKER", "IP rate-limited on current egress. Rotating IP/proxy for next candidate.", "WARNING")
+                        if can_rotate_ip and self.config.vpn_provider == "pia":
+                            self.add_step_log("VPN", "Rotating PIA VPN egress IP to clear rate limit for next candidate...")
+                            self.vpn.rotate_vpn()
+                            self.vpn.verify_android_egress(self.adb)
+                            self._refresh_network_telemetry(force=True)
+                        elif not can_rotate_ip and idx + 1 >= len(candidate_accounts):
+                            self.add_step_log("CIRCUIT_BREAKER", "IP Rate-Limit detected and all candidates exhausted.", "WARNING")
 
                     self.send_heartbeat(include_screenshot=True, reason=f"Account {masked_email} login outcome: {self.current_state}")
                     time.sleep(2)
@@ -641,8 +642,11 @@ class TikTokBoosterOrchestrator:
             if authenticated_account:
                 self._run_stream_session(account=authenticated_account)
             else:
-                logger.warning("[-] Authentication challenge or failure encountered. Keeping remote screen active and entering manual recovery loop...")
-                self._run_manual_recovery_loop(reason=f"Authentication blocked: {self.current_state.value}. Operator intervention available.")
+                # Automatic Failover to Guest Viewer mode so live stream boosting never stops!
+                logger.warning("[-] All candidate accounts in pool exhausted or in cooldown. Continuing in Guest Viewer mode so live stream boosting never halts...")
+                self.add_step_log("FAILOVER", "All candidate accounts in cooldown. Continuing in Guest Viewer mode to keep boosting!", "WARNING")
+                self.transition_state(RunnerState.READY, reason="All candidate accounts in cooldown; boosting in Guest Viewer mode")
+                self._run_stream_session(account=None)
         else:
             logger.info("No dedicated account assigned in backend. Running in Guest Viewer mode.")
             self._run_stream_session(account=None)
@@ -726,11 +730,27 @@ class TikTokBoosterOrchestrator:
 
     def _fetch_candidate_accounts(self) -> list:
         """Fetches candidate enabled TikTok accounts for rotation from central backend API."""
-        accounts = []
-        assigned = self._fetch_assigned_account()
-        if assigned:
-            accounts.append(assigned)
-        return accounts
+        try:
+            url = f"{self.config.backend_url}/api/accounts/runner-assignment/{self.runner_key}"
+            headers = {}
+            if self.config.runner_secret:
+                headers["Authorization"] = f"Bearer {self.config.runner_secret}"
+                headers["X-Runner-Secret"] = self.config.runner_secret
+            res = requests.get(url, headers=headers, timeout=5)
+            if res.status_code == 200:
+                data = res.json()
+                accounts = []
+                # 1. Primary candidate account
+                if data.get("has_account") and data.get("account"):
+                    accounts.append(data.get("account"))
+                # 2. Additional pool candidates for auto-failover & rotation
+                for acc in data.get("accounts_pool", []):
+                    if not any(a.get("id") == acc.get("id") for a in accounts):
+                        accounts.append(acc)
+                return accounts
+        except Exception as e:
+            logger.debug(f"Backend candidate accounts fetch note: {e}")
+        return []
 
     def _run_stream_session(self, account=None):
         acc_label = f"[{account.get('username')}]" if account and isinstance(account, dict) and account.get('username') else (f"[{account.username}]" if account and hasattr(account, 'username') else "[Guest-Viewer]")
