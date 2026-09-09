@@ -654,6 +654,11 @@ class ADBController:
             return False
 
         ui_text = self.get_ui_text_content().lower()
+        if any(k in ui_text for k in ["when's your birthdate", "enter your birthdate", "your birthdate won't be shown"]):
+            logger.warning("[-] Live check failed: 'When's your birthdate?' modal is blocking screen. Auto-resolving...")
+            self.handle_birthdate_modal()
+            return False
+
         live_indicators = ["follow", "rose", "share", "send a comment", "gift", "tap to like", "host", "ranking", "live"]
         if any(ind in ui_text for ind in ["follow", "rose", "share", "gift", "send a comment"]):
             return True
@@ -673,6 +678,43 @@ class ADBController:
     def _is_login_screen_active(self) -> bool:
         """Checks if TikTok's Login/SignUp modal is currently blocking the screen."""
         return self.is_login_or_signup_screen()
+
+    def handle_birthdate_modal(self) -> bool:
+        """
+        Detects and resolves TikTok's 'When's your birthdate?' onboarding modal.
+        Scrolls the year wheel down to an adult birth year (>18) and clicks Continue.
+        """
+        ui_text = self.get_ui_text_content().lower()
+        if not any(k in ui_text for k in ["when's your birthdate", "enter your birthdate", "your birthdate won't be shown"]):
+            return False
+
+        logger.info("🎂 [Onboarding] 'When's your birthdate?' modal detected. Selecting adult birth year...")
+        w = self.screen_width or 720
+        h = self.screen_height or 1280
+
+        # Year wheel column is approximately at 67% screen width
+        year_x = int(w * 0.67)
+        wheel_top = int(h * 0.52)
+        wheel_bottom = int(h * 0.68)
+
+        # Swipe down multiple times on the year wheel to scroll backwards into 1990s/2000s (>18 years old)
+        for _ in range(6):
+            self.shell(f"input swipe {year_x} {wheel_top} {year_x} {wheel_bottom} 120")
+            time.sleep(0.2)
+
+        time.sleep(0.5)
+
+        # Click the red Continue button
+        if not self.click_element(text="Continue"):
+            self.shell(f"input tap {w // 2} {int(h * 0.735)}")
+        time.sleep(1.5)
+
+        # Handle optional confirmation dialog ("Are you X years old? / Confirm")
+        if self.click_element(text="Confirm") or self.click_element(text="OK") or self.click_element(text="Continue"):
+            time.sleep(1.0)
+
+        logger.info("🎂 [Onboarding] Birthdate modal submitted successfully.")
+        return True
 
     def dismiss_popups(self) -> None:
         """Dismisses common prompts (Full-screen tooltips, System ANRs, Notifications, Cookie consents) using UI Inspection."""
@@ -700,6 +742,9 @@ class ADBController:
             if not self.click_element(content_desc="Close"):
                 self.click_element(text="Close")
             time.sleep(0.5)
+
+        # 6. Dismiss/resolve 'When's your birthdate?' onboarding dialog
+        self.handle_birthdate_modal()
 
     def get_safe_live_tap_coordinates(self) -> Tuple[int, int]:
         """
