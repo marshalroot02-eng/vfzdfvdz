@@ -27,6 +27,10 @@ on:
         description: 'VPN Provider (none, nordvpn, pia)'
         required: false
         default: 'pia'
+      vpn_location:
+        description: 'Preferred PIA City/Location (e.g. us_california, us_chicago, uk_london, or empty for deterministic pinning)'
+        required: false
+        default: ''
       emulator_provider:
         description: 'Android Emulator Provider (avd or ldplayer)'
         required: false
@@ -179,6 +183,7 @@ jobs:
           DURATION_MIN: ${{ github.event.inputs.duration_minutes }}
           LIKES_RATE: ${{ github.event.inputs.likes_per_minute }}
           VPN_PROVIDER: ${{ github.event.inputs.vpn_provider || 'pia' }}
+          VPN_LOCATION: ${{ github.event.inputs.vpn_location }}
           RUN_VPN_TESTS: ${{ github.event.inputs.run_vpn_tests }}
           VPN_TOKEN: ${{ secrets.VPN_TOKEN }}
           PIA_USER: ${{ secrets.PIA_USER }}
