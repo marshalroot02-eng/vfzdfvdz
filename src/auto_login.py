@@ -246,12 +246,13 @@ class AutoLoginManager:
                         self.adb.hide_keyboard()
                         time.sleep(2)
                         report("LOGIN_SUBMITTING", f"Submitted 2FA code {code[:2]}****")
-                        time.sleep(4)
-                        if self.adb.is_authenticated_user_feed():
-                            logger.info(f"[+] [LOGIN_SUCCESS] 2FA verified successfully for {masked_acc}!")
+                        for _ in range(4):
+                            time.sleep(1.5)
                             self._dismiss_post_login_prompts()
-                            report("AUTHENTICATED", "2FA verified into main feed")
-                            return True
+                            if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
+                                logger.info(f"[+] [LOGIN_SUCCESS] 2FA verified successfully for {masked_acc}!")
+                                report("AUTHENTICATED", "2FA verified into main feed")
+                                return True
                     else:
                         logger.warning("[-] Gmail 2FA code retrieval timed out.")
                         report("LOGIN_FAILED", "2FA code timeout from Gmail IMAP")
@@ -295,9 +296,9 @@ class AutoLoginManager:
             self.adb.take_screenshot("login_failure_view.png")
             return False
 
-        # Final verification check
-        if self.adb.is_authenticated_user_feed():
-            self._dismiss_post_login_prompts()
+        # Final verification check: dismiss any blocking popups first!
+        self._dismiss_post_login_prompts()
+        if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
             report("AUTHENTICATED", "User authenticated into main feed")
             return True
 
