@@ -39,6 +39,8 @@ class GmailVerificationService:
 
                 # Search unread emails or recent emails
                 status, messages = mail.search(None, '(OR FROM "TikTok" SUBJECT "TikTok")')
+                if status != "OK" or not messages[0] or not messages[0].strip():
+                    status, messages = mail.search(None, 'ALL')
                 if status == "OK" and messages[0]:
                     msg_ids = messages[0].split()
                     # Check the latest 3 messages
