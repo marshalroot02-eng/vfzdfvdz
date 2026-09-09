@@ -668,7 +668,7 @@ class ADBController:
 
     def _is_tiktok_in_foreground(self) -> bool:
         """Checks if native TikTok is currently the foreground active app."""
-        out = self.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'")
+        out = self.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp' || dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity'")
         return any(pkg in out for pkg in [
             self.package_name,
             "com.zhiliaoapp.musically",
