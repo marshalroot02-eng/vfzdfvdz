@@ -90,6 +90,12 @@ class ADBController:
                 logger.info(f"Auto-selected ADB device: {self.device_id}")
             else:
                 logger.info(f"Connected to specified ADB device: {self.device_id}")
+
+            # Ensure root permissions on emulator (required for app session backup/restore on /data/data)
+            try:
+                self.run_cmd(["root"], timeout=4)
+            except Exception:
+                pass
                 
             self._fetch_device_properties()
             return True
@@ -213,9 +219,18 @@ class ADBController:
                 import requests
                 local_tar = os.path.join(os.getcwd(), "session_restore.tar.gz")
                 r = requests.get(session_path_or_url, stream=True, timeout=60)
+                if r.status_code != 200:
+                    logger.error(f"Failed to download session tarball: HTTP {r.status_code}")
+                    return False
                 with open(local_tar, "wb") as f:
                     for chunk in r.iter_content(chunk_size=8192):
                         f.write(chunk)
+
+            # Ensure root access before modifying /data/data
+            try:
+                self.run_cmd(["root"], timeout=4)
+            except Exception:
+                pass
 
             # Stop TikTok before restoring data
             self.shell(f"am force-stop {self.package_name}")
@@ -719,8 +734,9 @@ class ADBController:
         if not self._is_tiktok_in_foreground():
             return 0
 
-        # Guardrail 3: If login/signup screen is active, dismiss it instead of clicking login buttons!
-        if self._is_login_screen_active():
+        # Guardrail 3: Fast check if login/signup screen is active via window focus (zero UI dump overhead)
+        out_win = self.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'").lower()
+        if "login" in out_win or "signup" in out_win or "authorize" in out_win:
             logger.info("Login modal active on screen. Auto-dismissing to enter Guest mode...")
             self.dismiss_popups()
             return 0
