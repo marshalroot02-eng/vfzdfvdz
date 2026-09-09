@@ -173,7 +173,7 @@ class TikTokBoosterOrchestrator:
         resolved_from_emulator = False
         if hasattr(self, 'adb') and self.adb and getattr(self.adb, 'device_id', None):
             try:
-                raw = self.adb.shell("curl -s -m 4 http://ip-api.com/json/?fields=status,query,org,isp,city,country")
+                raw = self.adb.shell("toybox wget -q -O - 'http://ip-api.com/json/?fields=status,query,org,isp,city,country' 2>/dev/null || wget -q -O - 'http://ip-api.com/json/?fields=status,query,org,isp,city,country' 2>/dev/null || curl -s -m 4 'http://ip-api.com/json/?fields=status,query,org,isp,city,country'")
                 if raw and "{" in raw:
                     data = json.loads(raw[raw.find("{"):raw.rfind("}")+1])
                     if data.get("status") == "success" and data.get("query"):
@@ -186,7 +186,7 @@ class TikTokBoosterOrchestrator:
                         telemetry["egress_source"] = "android_emulator"
                         resolved_from_emulator = True
                 if not resolved_from_emulator:
-                    raw_fb = self.adb.shell("curl -s -m 4 https://ipwho.is/")
+                    raw_fb = self.adb.shell("toybox wget -q -O - 'https://ipwho.is/' 2>/dev/null || wget -q -O - 'https://ipwho.is/' 2>/dev/null || curl -s -m 4 'https://ipwho.is/'")
                     if raw_fb and "{" in raw_fb:
                         data_fb = json.loads(raw_fb[raw_fb.find("{"):raw_fb.rfind("}")+1])
                         if data_fb.get("success") and data_fb.get("ip"):
@@ -749,9 +749,6 @@ class TikTokBoosterOrchestrator:
         if self.adb.is_login_or_signup_screen():
             logger.info("Screen is on login/signup page. Auto-dismissing to enter Live Room...")
             self.adb.dismiss_popups()
-            if self.adb.is_login_or_signup_screen():
-                self.adb.shell("input keyevent 4")
-                time.sleep(1)
             # Re-trigger live room navigation intent
             if self.config.stream_url:
                 self.adb.shell(f'am start -a android.intent.action.VIEW -d "{self.config.stream_url}" {self.adb.package_name}')
@@ -793,9 +790,9 @@ class TikTokBoosterOrchestrator:
                     self.transition_state(RunnerState.RUNNING, reason="Live player active and tapping")
                 last_stream_reopen_time = now
 
-            # Execute Heart Likes Burst
+            # Execute Heart Likes Burst (high-speed loop with zero UI-dump overhead)
             if now - last_burst_time >= interval_between_bursts:
-                if self.adb.is_live_stream_active():
+                if self.adb._is_tiktok_in_foreground():
                     taps = self.adb.send_batch_likes(tap_count=taps_per_burst, delay_ms=120)
                     self.total_likes_sent += taps
                 last_burst_time = now
