@@ -81,6 +81,7 @@ class TikTokAccount(BaseModel):
     session_backup_url: Optional[str] = Field(default=None, description="Cloud URL or base64 to saved app data session tarball")
     device_id: Optional[str] = Field(default=None, description="Persistent Android ID / hardware ID hex string")
     proxy: Optional[str] = Field(default=None, description="Proxy in format http://user:pass@host:port or host:port")
+    vpn_location: Optional[str] = Field(default=None, description="Preferred PIA VPN City/Region (e.g. us_california, us_chicago, uk_london)")
     status: str = Field(default="Idle", description="Current account status")
     last_active: Optional[str] = Field(default=None, description="Timestamp of last activity")
     assigned_runner: Optional[str] = Field(default=None, description="Runner identifier currently using account")
