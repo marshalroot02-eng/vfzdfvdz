@@ -30,6 +30,12 @@ if [ "$SDK_VER" != "34" ]; then
 fi
 echo "[PASS] Android 14 (API 34) verified successfully!"
 
+# Enable root access on AVD (required for app session backup/restore on /data/data)
+echo "Enabling ADB root permissions on Android 14 emulator..."
+adb root 2>/dev/null || true
+adb wait-for-device 2>/dev/null || true
+sleep 1
+
 # Configure Clean HD Portrait Display Resolution (720x1280 @ 240 DPI)
 echo "Configuring HD Android Display Resolution (720x1280 @ 240dpi)..."
 adb shell wm size 720x1280 || true
@@ -77,10 +83,17 @@ RUNNER_INDEX="${RUNNER_INDEX:-0}"
 STREAM_URL="${STREAM_URL:-https://www.tiktok.com/@tiktok/live}"
 DURATION_MIN="${DURATION_MIN:-60}"
 LIKES_RATE="${LIKES_RATE:-120}"
+VPN_LOCATION="${VPN_LOCATION:-}"
+
+ARGS=(
+  --stream-url "$STREAM_URL"
+  --duration "$DURATION_MIN"
+  --likes-per-min "$LIKES_RATE"
+  --runner-index "$RUNNER_INDEX"
+)
+if [ -n "$VPN_LOCATION" ]; then
+  ARGS+=(--vpn-location "$VPN_LOCATION")
+fi
 
 export PYTHONPATH="${PYTHONPATH:-.}:."
-python -m src.main \
-  --stream-url "$STREAM_URL" \
-  --duration "$DURATION_MIN" \
-  --likes-per-min "$LIKES_RATE" \
-  --runner-index "$RUNNER_INDEX"
+python -m src.main "${ARGS[@]}"
