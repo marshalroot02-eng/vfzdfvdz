@@ -693,13 +693,21 @@ class ADBController:
             "continue with google",
             "continue with facebook",
             "enter email or username",
+            "email or username",
+            "email / username",
             "already have an account",
+            "already have an account? log in",
             "log in",
-            "password"
+            "password",
+            "verify email",
+            "verification code",
+            "phone / email",
+            "phone",
+            "email"
         ]
         if self.is_terms_or_policy_screen():
             return True
-        return any(phrase in ui_text for phrase in ["log in to tiktok", "sign up for tiktok", "use phone / email / username", "enter email or username", "already have an account? log in"])
+        return any(phrase in ui_text for phrase in login_phrases)
 
     def is_terms_or_policy_screen(self) -> bool:
         """Checks if TikTok's Terms of Service or Privacy Policy document/prompt is visible."""
