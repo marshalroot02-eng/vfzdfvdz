@@ -630,16 +630,18 @@ class ADBController:
     def close_legal_webview(self) -> bool:
         """
         Closes an open full-screen Terms of Service / Privacy Policy legal WebView.
-        Taps the top-left back arrow (coordinates: ~55, ~125 on 720x1280) and sends KEYCODE_BACK.
+        Taps the top-left back arrow (exact pixel center: 55, 74 on 720x1280) and sends KEYCODE_BACK.
         """
         w = self.screen_width or 720
         h = self.screen_height or 1280
-        arrow_x = int(w * 0.08)  # ~57px on 720w
-        arrow_y = int(h * 0.10)  # ~128px on 1280h
+        arrow_x = int(w * (55 / 720))   # ~55px
+        arrow_y = int(h * (74 / 1280))  # ~74px
         
         logger.info(f"[+] Closing legal WebView: tapping top-left back arrow at ({arrow_x}, {arrow_y})...")
         self.shell(f"input tap {arrow_x} {arrow_y}")
-        time.sleep(0.8)
+        time.sleep(0.4)
+        self.shell("input tap 55 74")
+        time.sleep(0.4)
 
         # Also try native Back button element if detected
         self.click_element(content_desc="Back")
@@ -653,7 +655,6 @@ class ADBController:
         ui_text = self.get_ui_text_content().lower()
         if any(k in ui_text for k in ["terms of service", "privacy policy"]):
             logger.info("[+] WebView still open. Sending second back keyevent...")
-            self.shell(f"input tap {arrow_x} {arrow_y}")
             self.shell("input keyevent 4")
             time.sleep(1.0)
             
