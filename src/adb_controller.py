@@ -627,6 +627,38 @@ class ADBController:
             logger.debug(f"Checkbox locate note: {e}")
         return False
 
+    def close_legal_webview(self) -> bool:
+        """
+        Closes an open full-screen Terms of Service / Privacy Policy legal WebView.
+        Taps the top-left back arrow (coordinates: ~55, ~125 on 720x1280) and sends KEYCODE_BACK.
+        """
+        w = self.screen_width or 720
+        h = self.screen_height or 1280
+        arrow_x = int(w * 0.08)  # ~57px on 720w
+        arrow_y = int(h * 0.10)  # ~128px on 1280h
+        
+        logger.info(f"[+] Closing legal WebView: tapping top-left back arrow at ({arrow_x}, {arrow_y})...")
+        self.shell(f"input tap {arrow_x} {arrow_y}")
+        time.sleep(0.8)
+
+        # Also try native Back button element if detected
+        self.click_element(content_desc="Back")
+        self.click_element(text="Back")
+        
+        # Send Android Back keyevent 4
+        self.shell("input keyevent 4")
+        time.sleep(1.0)
+        
+        # Verify if still on terms screen
+        ui_text = self.get_ui_text_content().lower()
+        if any(k in ui_text for k in ["terms of service", "privacy policy"]):
+            logger.info("[+] WebView still open. Sending second back keyevent...")
+            self.shell(f"input tap {arrow_x} {arrow_y}")
+            self.shell("input keyevent 4")
+            time.sleep(1.0)
+            
+        return not any(k in self.get_ui_text_content().lower() for k in ["terms of service", "privacy policy"])
+
     def get_ui_text_content(self) -> str:
         """Dumps UI hierarchy and returns concatenated text of all visible elements."""
         xml_str = self.dump_ui_hierarchy()
@@ -664,11 +696,20 @@ class ADBController:
             "log in",
             "password"
         ]
+        if self.is_terms_or_policy_screen():
+            return True
         return any(phrase in ui_text for phrase in ["log in to tiktok", "sign up for tiktok", "use phone / email / username", "enter email or username", "already have an account? log in"])
+
+    def is_terms_or_policy_screen(self) -> bool:
+        """Checks if TikTok's Terms of Service or Privacy Policy document/prompt is visible."""
+        ui_text = self.get_ui_text_content().lower()
+        return any(k in ui_text for k in [
+            "terms of service", "privacy policy", "terms and conditions", "terms of use"
+        ])
 
     def is_authenticated_user_feed(self) -> bool:
         """Verifies whether the TikTok app is in an authenticated user state."""
-        if self.is_login_or_signup_screen():
+        if self.is_login_or_signup_screen() or self.is_terms_or_policy_screen():
             return False
         ui_text = self.get_ui_text_content().lower()
         if ui_text:
