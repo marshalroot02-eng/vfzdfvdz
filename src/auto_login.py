@@ -442,9 +442,21 @@ class AutoLoginManager:
         if not terms_detected:
             return False
 
-        logger.info("[TERMS_AGREEMENT] Detected Terms of Service / Legal prompt. Scrolling and explicitly ACCEPTING...")
+        logger.info("[TERMS_AGREEMENT] Detected Terms of Service / Legal prompt. Handling...")
         w = self.adb.screen_width or width or 720
         h = self.adb.screen_height or height or 1280
+
+        # Check: Is this the full-screen legal document WebView ('Terms of Service | TikTok')?
+        # That document has NO Agree button (acceptance is implicit "By continuing...").
+        # We must immediately dismiss it via the top-left back arrow to return to the login flow!
+        is_full_document_webview = "terms of service | tiktok" in ui_text or (
+            "terms of service" in ui_text and ("contacting tiktok" in ui_text or "what services are covered" in ui_text or "welcome to tiktok" in ui_text)
+        )
+        if is_full_document_webview:
+            logger.info("[TERMS_AGREEMENT] Detected full legal text WebView document (no agree button exists on document). Dismissing via back arrow...")
+            self.adb.close_legal_webview()
+            time.sleep(1.5)
+            ui_text = self.adb.get_ui_text_content().lower()
 
         agreement_buttons = [
             "Agree and continue", "Agree & continue", "Agree", "I agree",
@@ -453,8 +465,8 @@ class AutoLoginManager:
 
         agreed = False
 
-        # Step 1: Scroll through the terms (up to 6 swipes) looking for checkboxes and agreement buttons
-        for scroll_idx in range(6):
+        # Step 1: Check for checkboxes and agreement buttons on consent prompt/dialog
+        for scroll_idx in range(3):
             # Check for any unselected checkbox / radio button
             if self.adb.click_first_unchecked_checkbox():
                 time.sleep(0.5)
@@ -462,13 +474,12 @@ class AutoLoginManager:
             # Check for any visible agreement button
             for btn in agreement_buttons:
                 if self.adb.click_element(text=btn) or self.adb.click_element(content_desc=btn):
-                    logger.info(f"[TERMS_AGREEMENT] [+] Tapped agreement button '{btn}' (scroll {scroll_idx}).")
+                    logger.info(f"[TERMS_AGREEMENT] [+] Tapped agreement button '{btn}'.")
                     agreed = True
                     time.sleep(1.5)
                     break
 
             if not agreed:
-                # Also check common resource IDs for agreement buttons
                 for res_id in ["agree_btn", "btn_agree", "confirm_btn", "tv_agree"]:
                     if self.adb.click_element(resource_id=res_id):
                         logger.info(f"[TERMS_AGREEMENT] [+] Tapped agreement button by ID '{res_id}'.")
@@ -479,12 +490,15 @@ class AutoLoginManager:
             if agreed:
                 break
 
-            # Scroll down (swipe up) to reveal subsequent terms content and the accept button
-            logger.info(f"[TERMS_AGREEMENT] Agree button not visible yet. Scrolling down terms (pass {scroll_idx + 1}/6)...")
-            self.adb.shell(f"input swipe {w // 2} {int(h * 0.75)} {w // 2} {int(h * 0.25)} 250")
-            time.sleep(0.8)
+            # If an agree button might be on a consent bottom sheet, swipe up once
+            ui_check = self.adb.get_ui_text_content().lower()
+            if any(k in ui_check for k in ["agree and continue", "terms of use", "by continuing"]):
+                self.adb.shell(f"input swipe {w // 2} {int(h * 0.75)} {w // 2} {int(h * 0.25)} 250")
+                time.sleep(0.8)
+            else:
+                break
 
-        # Step 2: If agreed, check if a second confirmation or subsequent agreement dialog appeared
+        # Step 2: If agreed, check if a second confirmation dialog appeared
         if agreed:
             ui_after = self.adb.get_ui_text_content().lower()
             for btn in ["Agree and continue", "Agree", "Accept", "Continue", "Confirm"]:
@@ -493,22 +507,14 @@ class AutoLoginManager:
                     time.sleep(1.0)
             return True
 
-        # Step 3: If no button was on the document itself (full WebView document opened like 'Terms of Service | TikTok')
-        # Close the document view using close_legal_webview and accept on the underlying host prompt!
-        ui_check = self.adb.get_ui_text_content().lower()
-        if any(k in ui_check for k in ["terms of service", "privacy policy"]):
-            logger.info("[TERMS_AGREEMENT] Full legal text WebView active. Closing document view to access agreement dialog...")
+        # Step 3: If still showing legal text WebView, ensure it is closed
+        ui_check_final = self.adb.get_ui_text_content().lower()
+        if any(k in ui_check_final for k in ["terms of service", "privacy policy"]):
+            logger.info("[TERMS_AGREEMENT] Ensuring legal document view is closed...")
             self.adb.close_legal_webview()
-            time.sleep(1.5)
+            time.sleep(1.0)
 
-            # Now check again for agreement buttons on the underlying prompt!
-            for btn in agreement_buttons:
-                if self.adb.click_element(text=btn) or self.adb.click_element(content_desc=btn):
-                    logger.info(f"[TERMS_AGREEMENT] [+] Tapped agreement button '{btn}' on host dialog.")
-                    time.sleep(1.0)
-                    return True
-
-        return agreed
+        return True
 
     def _dismiss_initial_onboarding(self, width: int = 720, height: int = 1280) -> None:
         """Dismisses splash, terms, interest selection, tutorial swipe overlays, and birthdate modal."""
