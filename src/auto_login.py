@@ -126,9 +126,14 @@ class AutoLoginManager:
         report("LOGIN_REQUIRED", "Detecting login screen and navigating to Email login tab")
         self._ensure_tiktok_foreground()
 
-        # If Terms of Service / Privacy Policy prompt is showing, AGREE to it!
-        self.handle_terms_and_conditions(width, height)
-        time.sleep(1.0)
+        # If Terms of Service / Privacy Policy prompt is showing, close/agree to it!
+        for _ in range(3):
+            if not self.adb.is_terms_or_policy_screen():
+                break
+            logger.info("Detected Terms/Privacy legal overlay before login navigation. Dismissing...")
+            self.handle_terms_and_conditions(width, height)
+            self.adb.close_legal_webview()
+            time.sleep(1.0)
         
         # Check if birthdate modal is already on screen
         if self.adb.handle_birthdate_modal():
@@ -445,16 +450,22 @@ class AutoLoginManager:
         w = self.adb.screen_width or width or 720
         h = self.adb.screen_height or height or 1280
 
-        # Check: Is this the full-screen legal document WebView ('Terms of Service | TikTok')?
+        # Check: Is this a full-screen legal document WebView ('Terms of Service', 'Privacy Policy')?
         # That document has NO Agree button (acceptance is implicit "By continuing...").
-        # We must immediately dismiss it via the top-left back arrow to return to the login flow!
-        is_full_document_webview = "terms of service | tiktok" in ui_text or (
-            "terms of service" in ui_text and ("contacting tiktok" in ui_text or "what services are covered" in ui_text or "welcome to tiktok" in ui_text)
+        # We must immediately dismiss it via top-left back arrow / Android Back to return to the login flow!
+        is_full_document_webview = (
+            "terms of service | tiktok" in ui_text or 
+            "privacy policy | tiktok" in ui_text or
+            "terms of service" in ui_text or
+            "privacy policy" in ui_text or
+            "welcome to tiktok" in ui_text or
+            "usds joint venture" in ui_text or
+            ("terms" in ui_text and ("contacting tiktok" in ui_text or "what services are covered" in ui_text or "information we collect" in ui_text))
         )
         if is_full_document_webview:
             logger.info("[TERMS_AGREEMENT] Detected full legal text WebView document (no agree button exists on document). Dismissing via back arrow...")
             self.adb.close_legal_webview()
-            time.sleep(1.5)
+            time.sleep(1.2)
             ui_text = self.adb.get_ui_text_content().lower()
 
         agreement_buttons = [
