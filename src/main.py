@@ -643,14 +643,19 @@ class TikTokBoosterOrchestrator:
             if authenticated_account:
                 self._run_stream_session(account=authenticated_account)
             else:
-                # Automatic Failover to Guest Viewer mode so live stream boosting never stops!
-                logger.warning("[-] All candidate accounts in pool exhausted or in cooldown. Continuing in Guest Viewer mode so live stream boosting never halts...")
-                self.add_step_log("FAILOVER", "All candidate accounts in cooldown. Continuing in Guest Viewer mode to keep boosting!", "WARNING")
-                self.transition_state(RunnerState.READY, reason="All candidate accounts in cooldown; boosting in Guest Viewer mode")
-                self._run_stream_session(account=None)
+                logger.error("[-] All candidate accounts failed authentication or are in cooldown. Guest Viewer mode disabled.")
+                self.add_step_log("AUTH_FAILED", "All candidate accounts failed authentication. Halting runner (Guest mode disabled).", "ERROR")
+                self.transition_state(RunnerState.LOGIN_FAILED, reason="Authentication failed for all candidate accounts; guest mode disabled")
+                self.send_heartbeat(include_screenshot=True, reason="All candidate accounts failed authentication")
+                self._notify_workflow_done(status="failed")
+                sys.exit(1)
         else:
-            logger.info("No dedicated account assigned in backend. Running in Guest Viewer mode.")
-            self._run_stream_session(account=None)
+            logger.error("[-] No candidate accounts assigned in backend. Guest Viewer mode disabled.")
+            self.add_step_log("AUTH_FAILED", "No accounts assigned. Halting runner (Guest mode disabled).", "ERROR")
+            self.transition_state(RunnerState.LOGIN_FAILED, reason="No accounts assigned; guest mode disabled")
+            self.send_heartbeat(include_screenshot=True, reason="No accounts assigned")
+            self._notify_workflow_done(status="failed")
+            sys.exit(1)
 
     def _run_manual_recovery_loop(self, reason: str = ""):
         """
