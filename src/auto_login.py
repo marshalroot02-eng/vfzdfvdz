@@ -126,13 +126,14 @@ class AutoLoginManager:
         report("LOGIN_REQUIRED", "Detecting login screen and navigating to Email login tab")
         self._ensure_tiktok_foreground()
 
-        # If Terms of Service / Privacy Policy webview is showing, dismiss it!
-        self._dismiss_terms_overlay(width, height)
+        # If Terms of Service / Privacy Policy prompt is showing, AGREE to it!
+        self.handle_terms_and_conditions(width, height)
         time.sleep(1.0)
         
         # Check if birthdate modal is already on screen
         if self.adb.handle_birthdate_modal():
             time.sleep(2)
+            self.handle_terms_and_conditions(width, height)
 
         # Check if already on login screen, else tap Profile in bottom right
         if not self.adb.is_login_or_signup_screen():
@@ -144,6 +145,7 @@ class AutoLoginManager:
 
         if self.adb.handle_birthdate_modal():
             time.sleep(2)
+            self.handle_terms_and_conditions(width, height)
 
         # Check if on "Sign up for TikTok" screen, and click "Already have an account? Log in"
         ui_text = self.adb.get_ui_text_content().lower()
@@ -163,20 +165,29 @@ class AutoLoginManager:
                 self.adb.shell(f"input tap {width // 2} {int(height * 0.36)}")
         time.sleep(3)
 
+        # CRITICAL: When clicking continue with email/phone, TikTok displays Terms & Conditions popup.
+        # We MUST explicitly AGREE to it before adding email, never dismiss!
+        logger.info("Checking for Terms & Conditions agreement popup before entering email...")
+        self.handle_terms_and_conditions(width, height)
+        time.sleep(1.0)
+
         # If clicking "Use phone / email / username" presented "When's your birthdate?", resolve it!
         if self.adb.handle_birthdate_modal():
             time.sleep(2.5)
+            self.handle_terms_and_conditions(width, height)
 
         self._capture_checkpoint("02_login_navigated")
 
         # Select 'Email / Username' tab
         logger.info("Selecting 'Email / Username' tab...")
+        self.handle_terms_and_conditions(width, height)
         if not (self.adb.click_element(text="Email / Username") or 
                 self.adb.click_element(text="Email or username") or 
                 self.adb.click_element(text="Email")):
             if self.adb._is_tiktok_in_foreground():
                 self.adb.shell(f"input tap {int(width * 0.72)} {int(height * 0.12)}")
         time.sleep(2)
+        self.handle_terms_and_conditions(width, height)
 
         # Focus Email input field & type username
         logger.info("Entering username/email into input field...")
@@ -310,9 +321,10 @@ class AutoLoginManager:
                                 self.adb.kickstart_video_surface()
                             ui_post = self.adb.get_ui_text_content().lower()
 
-                            # Auto-dismiss Terms of Service / Privacy Policy modal if loaded post-2FA
+                            # Check for and AGREE to Terms & Conditions modal if loaded post-2FA
                             if any(k in ui_post for k in ["terms of service", "privacy policy", "terms"]):
-                                self._dismiss_terms_overlay(width, height)
+                                logger.info("[2FA_POST_LOGIN] Terms & Conditions modal presented. Explicitly AGREEING...")
+                                self.handle_terms_and_conditions(width, height)
                                 time.sleep(1.5)
                                 continue
 
@@ -414,41 +426,77 @@ class AutoLoginManager:
         self._capture_checkpoint("07_auth_failed")
         return False
 
-    def _dismiss_terms_overlay(self, width: int = 720, height: int = 1280) -> bool:
-        """Dismisses the TikTok Terms of Service / Privacy Policy in-app WebView overlay."""
+    def handle_terms_and_conditions(self, width: int = 720, height: int = 1280) -> bool:
+        """
+        Detects and explicitly AGREES to TikTok Terms of Service / Privacy Policy prompts.
+        Crucial: Dismissing terms without agreeing causes TikTok to re-prompt post-2FA,
+        which triggers an in-app WebView loading state (white screen) and stalls authentication.
+        """
         ui_text = self.adb.get_ui_text_content().lower()
-        if not any(k in ui_text for k in ["terms of service", "privacy policy", "terms"]):
+        terms_detected = any(k in ui_text for k in [
+            "terms of service", "privacy policy", "terms and conditions", 
+            "terms of use", "by continuing, you agree", "agree to tiktok", 
+            "agree and continue", "terms"
+        ])
+        if not terms_detected:
             return False
 
-        logger.info("[TERMS_OVERLAY] Detected 'Terms of Service' / Legal overlay. Auto-dismissing...")
+        logger.info("[TERMS_AGREEMENT] Detected Terms of Service / Legal prompt. Explicitly AGREEING...")
         w = self.adb.screen_width or width or 720
         h = self.adb.screen_height or height or 1280
 
-        # 1. Try native buttons first if exposed
-        self.adb.click_element(content_desc="Back")
-        self.adb.click_element(text="Agree and continue")
-        self.adb.click_element(text="Agree")
-        self.adb.click_element(text="Accept")
+        # Step 1: If there's an unchecked checkbox, check it!
+        self.adb.click_first_unchecked_checkbox()
+        time.sleep(0.5)
 
-        # 2. In-app WebViews respond reliably to Android KEYCODE_BACK (Keyevent 4)
-        self.adb.shell("input keyevent 4")
-        time.sleep(1.0)
+        # Step 2: Actively click agreement buttons (NEVER click Back if an Agree button exists!)
+        agreement_buttons = [
+            "Agree and continue", "Agree & continue", "Agree", "I agree",
+            "Accept", "Accept all", "Continue", "Confirm", "Got it", "OK"
+        ]
+        agreed = False
+        for btn in agreement_buttons:
+            if self.adb.click_element(text=btn) or self.adb.click_element(content_desc=btn):
+                logger.info(f"[TERMS_AGREEMENT] [+] Successfully tapped agreement button '{btn}'.")
+                agreed = True
+                time.sleep(1.5)
+                break
 
-        # 3. Fallback: Tap top-left arrow relative coordinate and send back key again
-        if any(k in self.adb.get_ui_text_content().lower() for k in ["terms of service", "privacy policy"]):
-            self.adb.shell(f"input tap {int(w * 0.08)} {int(h * 0.06)}")
-            time.sleep(1.0)
-            self.adb.shell("input keyevent 4")
-            time.sleep(1.0)
+        # If agreed, check if a second confirmation or subsequent agreement dialog appeared
+        if agreed:
+            ui_after = self.adb.get_ui_text_content().lower()
+            for btn in ["Agree and continue", "Agree", "Accept", "Continue"]:
+                if btn.lower() in ui_after:
+                    self.adb.click_element(text=btn)
+                    time.sleep(1.0)
+            return True
 
-        return True
+        # Step 3: Only if NO agreement button was found on the screen, check if we're trapped
+        # inside a read-only document view (e.g. WebView showing full document with only a top-left back arrow)
+        ui_check = self.adb.get_ui_text_content().lower()
+        if any(k in ui_check for k in ["terms of service", "privacy policy"]):
+            logger.info("[TERMS_AGREEMENT] In read-only legal text view without Agree button. Navigating back to prompt dialog...")
+            if not self.adb.click_element(content_desc="Back"):
+                self.adb.shell(f"input tap {int(w * 0.08)} {int(h * 0.06)}")
+                time.sleep(1.0)
+                if any(k in self.adb.get_ui_text_content().lower() for k in ["terms of service", "privacy policy"]):
+                    self.adb.shell("input keyevent 4")
+            time.sleep(1.5)
+            # Now check again for agreement buttons on the underlying prompt!
+            for btn in agreement_buttons:
+                if self.adb.click_element(text=btn) or self.adb.click_element(content_desc=btn):
+                    logger.info(f"[TERMS_AGREEMENT] [+] Tapped agreement button '{btn}' on host dialog.")
+                    time.sleep(1.0)
+                    return True
+
+        return agreed
 
     def _dismiss_initial_onboarding(self, width: int = 720, height: int = 1280) -> None:
         """Dismisses splash, terms, interest selection, tutorial swipe overlays, and birthdate modal."""
         w = self.adb.screen_width or width or 720
         h = self.adb.screen_height or height or 1280
-        # Auto-dismiss Terms of Service overlay if presented
-        self._dismiss_terms_overlay(w, h)
+        # Auto-agree to Terms of Service overlay if presented
+        self.handle_terms_and_conditions(w, h)
 
         if self.adb.click_element(text="Agree and continue") or self.adb.click_element(text="Agree"):
             time.sleep(1.5)
@@ -471,8 +519,8 @@ class AutoLoginManager:
         if any(bad in ui for bad in ["incorrect", "code", "resend", "verify", "enter password", "too many attempts", "maximum number"]):
             return
 
-        # Auto-dismiss Terms of Service / Privacy Policy web views
-        self._dismiss_terms_overlay()
+        # Auto-agree to Terms of Service / Privacy Policy if presented
+        self.handle_terms_and_conditions()
 
         self.adb.handle_birthdate_modal()
         for prompt_btn in [
