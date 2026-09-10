@@ -300,11 +300,26 @@ class AutoLoginManager:
                         self._capture_checkpoint("06_2fa_code_submitted")
 
                         # Validate 2FA submission response (TikTok auto-submits upon 6th digit)
-                        for check_idx in range(15):
+                        for check_idx in range(25):
                             time.sleep(2.0)
-                            if check_idx in [3, 7]:
+                            if check_idx in [3, 8]:
                                 self.adb.kickstart_video_surface()
                             ui_post = self.adb.get_ui_text_content().lower()
+
+                            # Auto-dismiss Terms of Service / Privacy Policy modal if loaded post-2FA
+                            if "terms of service" in ui_post or "privacy policy" in ui_post or "terms" in ui_post:
+                                logger.info("[+] Detected 'Terms of Service' post-login modal. Auto-dismissing to enter feed...")
+                                if not (self.adb.click_element(content_desc="Back") or 
+                                        self.adb.click_element(text="Agree") or 
+                                        self.adb.click_element(text="Accept") or
+                                        self.adb.click_element(text="Agree and continue")):
+                                    self.adb.shell("input tap 50 60")
+                                    time.sleep(1.0)
+                                    ui_check = self.adb.get_ui_text_content().lower()
+                                    if "terms of service" in ui_check:
+                                        self.adb.shell("input keyevent 4")
+                                time.sleep(2.0)
+                                continue
 
                             # 1. Successful authentication into feed or live stream
                             if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
@@ -429,11 +444,25 @@ class AutoLoginManager:
         if any(bad in ui for bad in ["incorrect", "code", "resend", "verify", "enter password", "too many attempts", "maximum number"]):
             return
 
+        # Auto-dismiss Terms of Service / Privacy Policy web views
+        if "terms of service" in ui or "privacy policy" in ui:
+            logger.info("Detected 'Terms of Service' post-login modal in prompt check. Dismissing...")
+            if not (self.adb.click_element(content_desc="Back") or 
+                    self.adb.click_element(text="Agree") or 
+                    self.adb.click_element(text="Accept") or
+                    self.adb.click_element(text="Agree and continue")):
+                self.adb.shell("input tap 50 60")
+                time.sleep(1.0)
+                ui_check = self.adb.get_ui_text_content().lower()
+                if "terms of service" in ui_check:
+                    self.adb.shell("input keyevent 4")
+            time.sleep(1.0)
+
         self.adb.handle_birthdate_modal()
         for prompt_btn in [
             "Save", "Not now", "Don't allow", "Deny", "Skip", "Start watching",
             "Got it", "Cancel", "Never", "While using the app", "Only this time",
-            "Dismiss", "Later", "Close"
+            "Dismiss", "Later", "Close", "Agree and continue", "Agree", "Accept"
         ]:
             if self.adb.click_element(text=prompt_btn):
                 time.sleep(0.6)
