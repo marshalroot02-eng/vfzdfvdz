@@ -125,6 +125,10 @@ class AutoLoginManager:
         # 6. Navigate into Login Screen
         report("LOGIN_REQUIRED", "Detecting login screen and navigating to Email login tab")
         self._ensure_tiktok_foreground()
+
+        # If Terms of Service / Privacy Policy webview is showing, dismiss it!
+        self._dismiss_terms_overlay(width, height)
+        time.sleep(1.0)
         
         # Check if birthdate modal is already on screen
         if self.adb.handle_birthdate_modal():
@@ -307,18 +311,9 @@ class AutoLoginManager:
                             ui_post = self.adb.get_ui_text_content().lower()
 
                             # Auto-dismiss Terms of Service / Privacy Policy modal if loaded post-2FA
-                            if "terms of service" in ui_post or "privacy policy" in ui_post or "terms" in ui_post:
-                                logger.info("[+] Detected 'Terms of Service' post-login modal. Auto-dismissing to enter feed...")
-                                if not (self.adb.click_element(content_desc="Back") or 
-                                        self.adb.click_element(text="Agree") or 
-                                        self.adb.click_element(text="Accept") or
-                                        self.adb.click_element(text="Agree and continue")):
-                                    self.adb.shell("input tap 50 60")
-                                    time.sleep(1.0)
-                                    ui_check = self.adb.get_ui_text_content().lower()
-                                    if "terms of service" in ui_check:
-                                        self.adb.shell("input keyevent 4")
-                                time.sleep(2.0)
+                            if any(k in ui_post for k in ["terms of service", "privacy policy", "terms"]):
+                                self._dismiss_terms_overlay(width, height)
+                                time.sleep(1.5)
                                 continue
 
                             # 1. Successful authentication into feed or live stream
@@ -419,10 +414,42 @@ class AutoLoginManager:
         self._capture_checkpoint("07_auth_failed")
         return False
 
+    def _dismiss_terms_overlay(self, width: int = 720, height: int = 1280) -> bool:
+        """Dismisses the TikTok Terms of Service / Privacy Policy in-app WebView overlay."""
+        ui_text = self.adb.get_ui_text_content().lower()
+        if not any(k in ui_text for k in ["terms of service", "privacy policy", "terms"]):
+            return False
+
+        logger.info("[TERMS_OVERLAY] Detected 'Terms of Service' / Legal overlay. Auto-dismissing...")
+        w = self.adb.screen_width or width or 720
+        h = self.adb.screen_height or height or 1280
+
+        # 1. Try native buttons first if exposed
+        self.adb.click_element(content_desc="Back")
+        self.adb.click_element(text="Agree and continue")
+        self.adb.click_element(text="Agree")
+        self.adb.click_element(text="Accept")
+
+        # 2. In-app WebViews respond reliably to Android KEYCODE_BACK (Keyevent 4)
+        self.adb.shell("input keyevent 4")
+        time.sleep(1.0)
+
+        # 3. Fallback: Tap top-left arrow relative coordinate and send back key again
+        if any(k in self.adb.get_ui_text_content().lower() for k in ["terms of service", "privacy policy"]):
+            self.adb.shell(f"input tap {int(w * 0.08)} {int(h * 0.06)}")
+            time.sleep(1.0)
+            self.adb.shell("input keyevent 4")
+            time.sleep(1.0)
+
+        return True
+
     def _dismiss_initial_onboarding(self, width: int = 720, height: int = 1280) -> None:
         """Dismisses splash, terms, interest selection, tutorial swipe overlays, and birthdate modal."""
         w = self.adb.screen_width or width or 720
         h = self.adb.screen_height or height or 1280
+        # Auto-dismiss Terms of Service overlay if presented
+        self._dismiss_terms_overlay(w, h)
+
         if self.adb.click_element(text="Agree and continue") or self.adb.click_element(text="Agree"):
             time.sleep(1.5)
         if self.adb.click_element(text="Skip") or self.adb.click_element(text="Choose your interests"):
@@ -445,18 +472,7 @@ class AutoLoginManager:
             return
 
         # Auto-dismiss Terms of Service / Privacy Policy web views
-        if "terms of service" in ui or "privacy policy" in ui:
-            logger.info("Detected 'Terms of Service' post-login modal in prompt check. Dismissing...")
-            if not (self.adb.click_element(content_desc="Back") or 
-                    self.adb.click_element(text="Agree") or 
-                    self.adb.click_element(text="Accept") or
-                    self.adb.click_element(text="Agree and continue")):
-                self.adb.shell("input tap 50 60")
-                time.sleep(1.0)
-                ui_check = self.adb.get_ui_text_content().lower()
-                if "terms of service" in ui_check:
-                    self.adb.shell("input keyevent 4")
-            time.sleep(1.0)
+        self._dismiss_terms_overlay()
 
         self.adb.handle_birthdate_modal()
         for prompt_btn in [
