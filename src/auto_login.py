@@ -194,13 +194,12 @@ class AutoLoginManager:
         self._ensure_tiktok_foreground()
         found_field = (self.adb.click_element(text="Email or username") or 
                        self.adb.click_element(text="Enter email or username") or 
-                       self.adb.click_element(resource_id="email_input"))
+                       self.adb.click_element(resource_id="email_input") or
+                       self.adb.click_element(content_desc="Email or username"))
         if not found_field:
-            if self.adb._is_tiktok_in_foreground() and self.adb.is_login_or_signup_screen():
-                self.adb.shell(f"input tap {width // 2} {int(height * 0.20)}")
-            else:
-                logger.warning("[-] TikTok not in foreground/login state. Refusing blind tap to prevent home widget typing.")
-                return False
+            logger.info("Email field not clicked by text, using field coordinates (width // 2, height * 0.20)...")
+            self._ensure_tiktok_foreground()
+            self.adb.shell(f"input tap {width // 2} {int(height * 0.20)}")
         time.sleep(1)
 
         clean_user = username.replace(" ", "").strip()
