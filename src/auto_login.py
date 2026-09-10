@@ -449,13 +449,17 @@ class AutoLoginManager:
         if not terms_detected:
             return False
 
+        # Guard: If on a normal login/signup screen without a legal document overlay, do not process
+        if self.adb.is_login_or_signup_screen() and not self.adb.is_terms_or_policy_screen():
+            return False
+
         logger.info("[TERMS_AGREEMENT] Detected Terms of Service / Legal prompt. Handling...")
         w = self.adb.screen_width or width or 720
         h = self.adb.screen_height or height or 1280
 
         agreement_buttons = [
-            "Agree and continue", "Agree & continue", "Agree", "I agree",
-            "Accept", "Accept all", "Continue", "Confirm", "Got it", "OK"
+            "Agree and continue", "Agree & continue", "Accept all", "Accept",
+            "I agree", "Continue", "Confirm", "Got it", "OK"
         ]
 
         agreed = False
@@ -496,7 +500,7 @@ class AutoLoginManager:
         # Step 2: If agreed, check if a second confirmation dialog appeared
         if agreed:
             ui_after = self.adb.get_ui_text_content().lower()
-            for btn in ["Agree and continue", "Agree", "Accept", "Continue", "Confirm"]:
+            for btn in ["Agree and continue", "Accept all", "Accept", "I agree", "Continue", "Confirm"]:
                 if btn.lower() in ui_after:
                     self.adb.click_element(text=btn)
                     time.sleep(1.0)
@@ -509,31 +513,17 @@ class AutoLoginManager:
                     if self.adb.click_element(text=btn):
                         time.sleep(1.5)
                         break
-            return True
+            return not self.adb.is_terms_or_policy_screen()
 
-        # Step 3: No agree button found — this is likely a full legal document WebView.
-        # Only NOW dismiss via back arrow (the document has no accept button).
-        is_full_document_webview = (
-            "terms of service | tiktok" in ui_text or 
-            "privacy policy | tiktok" in ui_text or
-            "welcome to tiktok" in ui_text or
-            "usds joint venture" in ui_text or
-            ("contacting tiktok" in ui_text or "what services are covered" in ui_text or "information we collect" in ui_text)
-        )
-        if is_full_document_webview:
-            logger.info("[TERMS_AGREEMENT] Full legal text WebView (no agree button found). Dismissing via back arrow...")
+        # Step 3: No agree button found. Check if this is a genuine FULL_LEGAL_DOCUMENT
+        if self.adb.is_terms_or_policy_screen():
+            logger.info("[TERMS_AGREEMENT] Verified full legal text WebView. Dismissing via back arrow exactly once...")
             self.adb.close_legal_webview()
             time.sleep(1.2)
             return not self.adb.is_terms_or_policy_screen()
 
-        # Step 4: Still showing terms but no buttons and not a document — try closing
-        ui_check_final = self.adb.get_ui_text_content().lower()
-        if any(k in ui_check_final for k in ["terms of service", "privacy policy"]):
-            logger.info("[TERMS_AGREEMENT] Ensuring legal document view is closed...")
-            self.adb.close_legal_webview()
-            time.sleep(1.0)
-
-        return not self.adb.is_terms_or_policy_screen()
+        # Step 4: Not an agreement dialog and not a verified legal document (e.g. login screen with footer) -> Do nothing!
+        return False
 
     def _dismiss_initial_onboarding(self, width: int = 720, height: int = 1280) -> None:
         """Dismisses splash, terms, interest selection, tutorial swipe overlays, and birthdate modal."""
@@ -542,7 +532,7 @@ class AutoLoginManager:
         # Auto-agree to Terms of Service overlay if presented
         self.handle_terms_and_conditions(w, h)
 
-        if self.adb.click_element(text="Agree and continue") or self.adb.click_element(text="Agree"):
+        if self.adb.click_element(text="Agree and continue") or self.adb.click_element(text="Accept all") or self.adb.click_element(text="I agree"):
             time.sleep(1.5)
         if self.adb.click_element(text="Skip") or self.adb.click_element(text="Choose your interests"):
             time.sleep(1.5)
@@ -570,7 +560,7 @@ class AutoLoginManager:
         for prompt_btn in [
             "Save", "Not now", "Don't allow", "Deny", "Skip", "Start watching",
             "Got it", "Cancel", "Never", "While using the app", "Only this time",
-            "Dismiss", "Later", "Close", "Agree and continue", "Agree", "Accept"
+            "Dismiss", "Later", "Close", "Agree and continue", "Accept all", "I agree", "Accept"
         ]:
             if self.adb.click_element(text=prompt_btn):
                 time.sleep(0.6)
