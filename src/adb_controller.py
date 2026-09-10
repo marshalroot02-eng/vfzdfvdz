@@ -630,35 +630,39 @@ class ADBController:
     def close_legal_webview(self) -> bool:
         """
         Closes an open full-screen Terms of Service / Privacy Policy legal WebView.
-        Taps the top-left back arrow (exact pixel center: 55, 74 on 720x1280) and sends KEYCODE_BACK.
+        Taps the top-left back arrow across common device densities and sends KEYCODE_BACK.
         """
         w = self.screen_width or 720
         h = self.screen_height or 1280
-        arrow_x = int(w * (55 / 720))   # ~55px
-        arrow_y = int(h * (74 / 1280))  # ~74px
+        arrow_x = int(w * 0.08)
+        arrow_y = int(h * 0.065)
         
         logger.info(f"[+] Closing legal WebView: tapping top-left back arrow at ({arrow_x}, {arrow_y})...")
         self.shell(f"input tap {arrow_x} {arrow_y}")
-        time.sleep(0.4)
+        time.sleep(0.3)
         self.shell("input tap 55 74")
-        time.sleep(0.4)
+        time.sleep(0.3)
+        self.shell(f"input tap {int(w * 0.07)} {int(h * 0.09)}")
+        time.sleep(0.3)
 
         # Also try native Back button element if detected
         self.click_element(content_desc="Back")
         self.click_element(text="Back")
+        self.click_element(content_desc="Close")
+        self.click_element(text="Close")
         
-        # Send Android Back keyevent 4
+        # Send Android Back keyevent 4 (standard Android back navigation)
         self.shell("input keyevent 4")
-        time.sleep(1.0)
+        time.sleep(0.8)
         
-        # Verify if still on terms screen
-        ui_text = self.get_ui_text_content().lower()
-        if any(k in ui_text for k in ["terms of service", "privacy policy"]):
-            logger.info("[+] WebView still open. Sending second back keyevent...")
+        # Verify if still on terms screen; if so, tap arrow again and send second back
+        if self.is_terms_or_policy_screen():
+            logger.info("[+] WebView still open. Retrying tap and back keyevent...")
+            self.shell(f"input tap {arrow_x} {arrow_y}")
             self.shell("input keyevent 4")
             time.sleep(1.0)
             
-        return not any(k in self.get_ui_text_content().lower() for k in ["terms of service", "privacy policy"])
+        return not self.is_terms_or_policy_screen()
 
     def get_ui_text_content(self) -> str:
         """Dumps UI hierarchy and returns concatenated text of all visible elements."""
@@ -670,16 +674,23 @@ class ADBController:
             root = ET.fromstring(xml_str)
             texts = []
             for node in root.iter('node'):
-                t = node.attrib.get('text', '')
-                d = node.attrib.get('content-desc', '')
-                if t: texts.append(t)
-                if d: texts.append(d)
+                text = node.attrib.get('text', '').strip()
+                desc = node.attrib.get('content-desc', '').strip()
+                if text:
+                    texts.append(text)
+                if desc and desc != text:
+                    texts.append(desc)
             return " ".join(texts)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"XML text dump parse note: {e}")
             return ""
 
     def is_login_or_signup_screen(self) -> bool:
         """Checks if TikTok's Login or Sign-up screen is actively visible."""
+        # A terms or legal policy document is NOT a login screen; it blocks the login screen
+        if self.is_terms_or_policy_screen():
+            return False
+
         ui_text = self.get_ui_text_content().lower()
         if not ui_text:
             out = self.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'").lower()
@@ -705,15 +716,17 @@ class ADBController:
             "phone",
             "email"
         ]
-        if self.is_terms_or_policy_screen():
-            return True
         return any(phrase in ui_text for phrase in login_phrases)
 
     def is_terms_or_policy_screen(self) -> bool:
         """Checks if TikTok's Terms of Service or Privacy Policy document/prompt is visible."""
         ui_text = self.get_ui_text_content().lower()
+        if not ui_text:
+            return False
         return any(k in ui_text for k in [
-            "terms of service", "privacy policy", "terms and conditions", "terms of use"
+            "terms of service", "privacy policy", "terms and conditions", "terms of use",
+            "welcome to tiktok", "usds joint venture", "what services are covered",
+            "contacting tiktok", "information we collect"
         ])
 
     def is_authenticated_user_feed(self) -> bool:
