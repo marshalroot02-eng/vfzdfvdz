@@ -428,9 +428,10 @@ class AutoLoginManager:
 
     def handle_terms_and_conditions(self, width: int = 720, height: int = 1280) -> bool:
         """
-        Detects and explicitly AGREES to TikTok Terms of Service / Privacy Policy prompts.
-        Crucial: Dismissing terms without agreeing causes TikTok to re-prompt post-2FA,
-        which triggers an in-app WebView loading state (white screen) and stalls authentication.
+        Detects, SCROLLS, and explicitly ACCEPTS TikTok Terms of Service / Privacy Policy.
+        Crucial: As identified, TikTok requires scrolling down the terms to accept them.
+        Dismissing or closing without accepting causes TikTok to block the session post-2FA
+        with a white loading screen.
         """
         ui_text = self.adb.get_ui_text_content().lower()
         terms_detected = any(k in ui_text for k in [
@@ -441,47 +442,65 @@ class AutoLoginManager:
         if not terms_detected:
             return False
 
-        logger.info("[TERMS_AGREEMENT] Detected Terms of Service / Legal prompt. Explicitly AGREEING...")
+        logger.info("[TERMS_AGREEMENT] Detected Terms of Service / Legal prompt. Scrolling and explicitly ACCEPTING...")
         w = self.adb.screen_width or width or 720
         h = self.adb.screen_height or height or 1280
 
-        # Step 1: If there's an unchecked checkbox, check it!
-        self.adb.click_first_unchecked_checkbox()
-        time.sleep(0.5)
-
-        # Step 2: Actively click agreement buttons (NEVER click Back if an Agree button exists!)
         agreement_buttons = [
             "Agree and continue", "Agree & continue", "Agree", "I agree",
             "Accept", "Accept all", "Continue", "Confirm", "Got it", "OK"
         ]
+
         agreed = False
-        for btn in agreement_buttons:
-            if self.adb.click_element(text=btn) or self.adb.click_element(content_desc=btn):
-                logger.info(f"[TERMS_AGREEMENT] [+] Successfully tapped agreement button '{btn}'.")
-                agreed = True
-                time.sleep(1.5)
+
+        # Step 1: Scroll through the terms (up to 6 swipes) looking for checkboxes and agreement buttons
+        for scroll_idx in range(6):
+            # Check for any unselected checkbox / radio button
+            if self.adb.click_first_unchecked_checkbox():
+                time.sleep(0.5)
+
+            # Check for any visible agreement button
+            for btn in agreement_buttons:
+                if self.adb.click_element(text=btn) or self.adb.click_element(content_desc=btn):
+                    logger.info(f"[TERMS_AGREEMENT] [+] Tapped agreement button '{btn}' (scroll {scroll_idx}).")
+                    agreed = True
+                    time.sleep(1.5)
+                    break
+
+            if not agreed:
+                # Also check common resource IDs for agreement buttons
+                for res_id in ["agree_btn", "btn_agree", "confirm_btn", "tv_agree"]:
+                    if self.adb.click_element(resource_id=res_id):
+                        logger.info(f"[TERMS_AGREEMENT] [+] Tapped agreement button by ID '{res_id}'.")
+                        agreed = True
+                        time.sleep(1.5)
+                        break
+
+            if agreed:
                 break
 
-        # If agreed, check if a second confirmation or subsequent agreement dialog appeared
+            # Scroll down (swipe up) to reveal subsequent terms content and the accept button
+            logger.info(f"[TERMS_AGREEMENT] Agree button not visible yet. Scrolling down terms (pass {scroll_idx + 1}/6)...")
+            self.adb.shell(f"input swipe {w // 2} {int(h * 0.75)} {w // 2} {int(h * 0.25)} 250")
+            time.sleep(0.8)
+
+        # Step 2: If agreed, check if a second confirmation or subsequent agreement dialog appeared
         if agreed:
             ui_after = self.adb.get_ui_text_content().lower()
-            for btn in ["Agree and continue", "Agree", "Accept", "Continue"]:
+            for btn in ["Agree and continue", "Agree", "Accept", "Continue", "Confirm"]:
                 if btn.lower() in ui_after:
                     self.adb.click_element(text=btn)
                     time.sleep(1.0)
             return True
 
-        # Step 3: Only if NO agreement button was found on the screen, check if we're trapped
-        # inside a read-only document view (e.g. WebView showing full document with only a top-left back arrow)
+        # Step 3: If no button was on the document itself (full WebView document opened like 'Terms of Service | TikTok')
+        # Close the document view using close_legal_webview and accept on the underlying host prompt!
         ui_check = self.adb.get_ui_text_content().lower()
         if any(k in ui_check for k in ["terms of service", "privacy policy"]):
-            logger.info("[TERMS_AGREEMENT] In read-only legal text view without Agree button. Navigating back to prompt dialog...")
-            if not self.adb.click_element(content_desc="Back"):
-                self.adb.shell(f"input tap {int(w * 0.08)} {int(h * 0.06)}")
-                time.sleep(1.0)
-                if any(k in self.adb.get_ui_text_content().lower() for k in ["terms of service", "privacy policy"]):
-                    self.adb.shell("input keyevent 4")
+            logger.info("[TERMS_AGREEMENT] Full legal text WebView active. Closing document view to access agreement dialog...")
+            self.adb.close_legal_webview()
             time.sleep(1.5)
+
             # Now check again for agreement buttons on the underlying prompt!
             for btn in agreement_buttons:
                 if self.adb.click_element(text=btn) or self.adb.click_element(content_desc=btn):
