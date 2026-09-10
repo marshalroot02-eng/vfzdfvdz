@@ -1,5 +1,9 @@
 name: TikTok Mobile App Live Stream Multi-Viewer & Auto-Liker
 
+concurrency:
+  group: booster-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   workflow_dispatch:
     inputs:
