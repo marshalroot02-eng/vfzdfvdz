@@ -646,10 +646,15 @@ class ADBController:
         if self.is_login_or_signup_screen():
             return False
         ui_text = self.get_ui_text_content().lower()
-        if not ui_text:
-            return False
-        has_nav = ("profile" in ui_text and "home" in ui_text) or ("for you" in ui_text) or ("following" in ui_text) or ("inbox" in ui_text)
-        return has_nav
+        if ui_text:
+            has_nav = ("profile" in ui_text and "home" in ui_text) or ("for you" in ui_text) or ("following" in ui_text) or ("inbox" in ui_text)
+            if has_nav:
+                return True
+        # If UI text is blank/sparse (video surface playing in software GLES AVD), verify foreground activity
+        fg = self.get_foreground_activity().lower()
+        if any(act in fg for act in ["mainactivity", "feed", "aweme"]) and not any(k in fg for k in ["login", "signup", "auth", "verify"]):
+            return True
+        return False
 
     def is_live_stream_active(self) -> bool:
         """
