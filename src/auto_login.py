@@ -296,19 +296,14 @@ class AutoLoginManager:
                     if code:
                         logger.info(f"Typing retrieved verification code '{code[:2]}****' into TikTok...")
                         self.adb.shell(f"input text {code}")
-                        time.sleep(1)
-                        self.adb.hide_keyboard()
-                        time.sleep(1)
-                        self.adb.shell("input keyevent 66")
-                        if not self.adb.click_element(text="Log in"):
-                            if not self.adb.click_element(text="Next"):
-                                self.adb.click_element(text="Verify")
                         report("LOGIN_SUBMITTING", f"Submitted 2FA code {code[:2]}****")
                         self._capture_checkpoint("06_2fa_code_submitted")
 
-                        # Validate 2FA submission response
-                        for _ in range(12):
-                            time.sleep(1.5)
+                        # Validate 2FA submission response (TikTok auto-submits upon 6th digit)
+                        for check_idx in range(15):
+                            time.sleep(2.0)
+                            if check_idx in [3, 7]:
+                                self.adb.kickstart_video_surface()
                             ui_post = self.adb.get_ui_text_content().lower()
 
                             # 1. Successful authentication into feed or live stream
@@ -337,9 +332,6 @@ class AutoLoginManager:
                                             for _ in range(6):
                                                 self.adb.shell("input keyevent 67")  # Backspace
                                             self.adb.shell(f"input text {new_code}")
-                                            time.sleep(1)
-                                            self.adb.hide_keyboard()
-                                            self.adb.shell("input keyevent 66")
                                             self._capture_checkpoint("06_2fa_resent_submitted")
                                             report("LOGIN_SUBMITTING", f"Submitted resent 2FA code {new_code[:2]}****")
                                             time.sleep(2)
