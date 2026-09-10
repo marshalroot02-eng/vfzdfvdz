@@ -470,9 +470,19 @@ class ADBController:
                 return True
             logger.info(f"Attempt {attempt}: Verifying live room and auto-dismissing overlays...")
             self.dismiss_popups()
+            if attempt in (2, 4):
+                self.kickstart_video_surface()
             time.sleep(2)
 
         return True
+
+    def kickstart_video_surface(self) -> None:
+        """Forces TikTok video surface rendering by executing a vertical swipe gesture to clear blank/white screens."""
+        w = self.screen_width or 720
+        h = self.screen_height or 1280
+        logger.info("Kickstarting video surface via vertical swipe gesture...")
+        self.shell(f"input swipe {w // 2} {int(h * 0.75)} {w // 2} {int(h * 0.25)} 250")
+        time.sleep(1)
 
     def dump_ui_hierarchy(self) -> str:
         """Dumps the current Android UI hierarchy XML using uiautomator."""
@@ -826,6 +836,37 @@ class ADBController:
             return True
         except Exception as e:
             logger.warning(f"Could not capture screenshot: {e}")
+            return False
+
+    def start_screen_record(self, output_path: str = "/sdcard/auth_session.mp4", time_limit: int = 180) -> bool:
+        """Starts native Android screen recording in the background on the device."""
+        try:
+            # Clear any leftover previous recording
+            self.shell(f"rm {output_path} 2>/dev/null || true")
+            logger.info(f"Starting native Android screen recording to {output_path} (time_limit: {time_limit}s)...")
+            self.shell(f"nohup screenrecord --bit-rate 2000000 --time-limit {time_limit} {output_path} >/dev/null 2>&1 &")
+            return True
+        except Exception as e:
+            logger.warning(f"Could not start screen recording: {e}")
+            return False
+
+    def stop_screen_record(self, local_dest: str = "auth_session.mp4", remote_path: str = "/sdcard/auth_session.mp4") -> bool:
+        """Gracefully stops native screen recording (SIGINT to write MP4 index) and pulls file to local runner workspace."""
+        try:
+            logger.info(f"Stopping screen recording and saving to {local_dest}...")
+            # SIGINT (-2) is required for screenrecord to finalize MP4 file header container (moov atom)
+            self.shell("pkill -2 screenrecord || kill -2 $(pidof screenrecord) 2>/dev/null || killall -2 screenrecord 2>/dev/null || true")
+            time.sleep(1.8)
+            res = self.run_cmd(["pull", remote_path, local_dest], timeout=45)
+            if os.path.exists(local_dest) and os.path.getsize(local_dest) > 1000:
+                logger.info(f"[+] Successfully pulled screen recording: {local_dest} ({os.path.getsize(local_dest)} bytes)")
+                self.shell(f"rm {remote_path} 2>/dev/null || true")
+                return True
+            else:
+                logger.warning(f"Screen recording pull did not produce a valid file: {res.stdout} {res.stderr}")
+                return False
+        except Exception as e:
+            logger.warning(f"Error stopping screen recording: {e}")
             return False
 
     def capture_screen_base64(self) -> Optional[str]:
