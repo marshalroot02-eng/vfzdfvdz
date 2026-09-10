@@ -11,6 +11,7 @@ import email
 import email.utils
 from email.header import decode_header
 from datetime import datetime, timezone
+from typing import Optional
 import logging
 
 logger = logging.getLogger("EmailService")
