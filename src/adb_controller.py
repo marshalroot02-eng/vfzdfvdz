@@ -586,7 +586,7 @@ class ADBController:
 
                 if matched and bounds_str:
                     coords, top_y = parse_bounds(bounds_str)
-                    if coords and top_y >= 180:
+                    if coords and (not is_action_btn or top_y >= 180):
                         return coords
         except Exception as e:
             logger.debug(f"Element parse error: {e}")
