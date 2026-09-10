@@ -602,6 +602,31 @@ class ADBController:
             return True
         return False
 
+    def click_first_unchecked_checkbox(self) -> bool:
+        """Finds and clicks the first visible unchecked checkbox or radio button on screen."""
+        xml_str = self.dump_ui_hierarchy()
+        if not xml_str:
+            return False
+        try:
+            import xml.etree.ElementTree as ET
+            import re
+            root = ET.fromstring(xml_str)
+            for node in root.iter('node'):
+                cls = node.attrib.get('class', '').lower()
+                checked = node.attrib.get('checked', 'false')
+                if ('checkbox' in cls or 'radiobutton' in cls or 'check' in node.attrib.get('resource-id', '').lower()) and checked == 'false':
+                    bounds = node.attrib.get('bounds', '')
+                    m = re.findall(r'\[(\d+),(\d+)\]', bounds)
+                    if len(m) == 2:
+                        x = (int(m[0][0]) + int(m[1][0])) // 2
+                        y = (int(m[0][1]) + int(m[1][1])) // 2
+                        logger.info(f"[+] Found unchecked terms checkbox at ({x}, {y}). Checking...")
+                        self.shell(f"input tap {x} {y}")
+                        return True
+        except Exception as e:
+            logger.debug(f"Checkbox locate note: {e}")
+        return False
+
     def get_ui_text_content(self) -> str:
         """Dumps UI hierarchy and returns concatenated text of all visible elements."""
         xml_str = self.dump_ui_hierarchy()
