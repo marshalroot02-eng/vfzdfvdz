@@ -4,7 +4,8 @@ Deterministic, instrumented login state machine supporting:
 - Clean session reset (pm clear)
 - Native UI Hierarchy element locating & clicking
 - In-App Email & Password Entry with soft keyboard auto-dismissal
-- Automated Gmail IMAP 2FA Code Extraction
+- Automated Gmail IMAP 2FA Code Extraction with timestamp freshness & auto-resend
+- Native Android Screen Recording (.mp4) and step-by-step screenshot captures
 - CAPTCHA / Puzzle Challenge Detection (LOGIN_BLOCKED)
 - Authoritative Post-Auth UI Validation (LOGIN_SUCCESS vs LOGIN_FAILED)
 """
@@ -31,7 +32,31 @@ class AutoLoginManager:
         """Generates a deterministic 16-hex Android ID based on account name."""
         return hashlib.sha256(account_identifier.encode("utf-8")).hexdigest()[:16]
 
+    def _capture_checkpoint(self, name: str) -> None:
+        """Captures milestone screenshot into auth_recordings/ and mirrors to last_stream_view.png."""
+        try:
+            os.makedirs("auth_recordings", exist_ok=True)
+            filepath = os.path.join("auth_recordings", f"{name}.png")
+            self.adb.take_screenshot(filepath)
+            if os.path.exists(filepath):
+                import shutil
+                shutil.copyfile(filepath, "last_stream_view.png")
+        except Exception as e:
+            logger.debug(f"Checkpoint save note: {e}")
+
     def authenticate_account(self, account: dict, state_callback: Optional[Callable[[str, str], None]] = None) -> bool:
+        """
+        Public entry point for account authentication.
+        Instruments native screen recording and ensures video artifacts are pulled.
+        """
+        self.adb.start_screen_record("/sdcard/auth_session.mp4", time_limit=180)
+        try:
+            return self._execute_authentication(account, state_callback)
+        finally:
+            self.adb.stop_screen_record("auth_session.mp4", "/sdcard/auth_session.mp4")
+            self._capture_checkpoint("08_final_state")
+
+    def _execute_authentication(self, account: dict, state_callback: Optional[Callable[[str, str], None]] = None) -> bool:
         """
         Executes the complete automated login state machine:
         1. Clean State (pm clear)
@@ -40,7 +65,7 @@ class AutoLoginManager:
         4. Enter username + password with keyboard auto-dismissal -> Submit
         5. Explicitly verify one of:
            A. Authenticated user feed -> AUTHENTICATED / LOGIN_SUCCESS
-           B. Email 2FA -> 2FA_REQUIRED -> Gmail IMAP -> Submit -> Verify
+           B. Email 2FA -> 2FA_REQUIRED -> Gmail IMAP -> Submit -> Verify -> Resend on error
            C. Incorrect credentials -> LOGIN_FAILED
            D. CAPTCHA / Challenge -> LOGIN_BLOCKED
            E. Login screen remains visible -> LOGIN_FAILED (LOGIN_SCREEN_STILL_VISIBLE)
@@ -90,6 +115,7 @@ class AutoLoginManager:
 
         # 5. Dismiss initial onboarding prompts (Terms, Interests, Swipe Up)
         self._dismiss_initial_onboarding(width, height)
+        self._capture_checkpoint("01_app_started")
 
         if not password:
             logger.info(f"No password provided for {masked_acc}. Proceeding in Guest mode.")
@@ -137,6 +163,8 @@ class AutoLoginManager:
         if self.adb.handle_birthdate_modal():
             time.sleep(2.5)
 
+        self._capture_checkpoint("02_login_navigated")
+
         # Select 'Email / Username' tab
         logger.info("Selecting 'Email / Username' tab...")
         if not (self.adb.click_element(text="Email / Username") or 
@@ -165,9 +193,11 @@ class AutoLoginManager:
         time.sleep(1)
         self.adb.hide_keyboard()
         time.sleep(1)
+        self._capture_checkpoint("03_email_entered")
 
         # Click the red "Continue" / "Next" button at the bottom of the Email step
         logger.info("Clicking 'Continue' / 'Next' button...")
+        auth_request_time = time.time()
         if not (self.adb.click_element(text="Continue") or 
                 self.adb.click_element(text="Next") or 
                 self.adb.click_element(text="Log in") or 
@@ -189,7 +219,7 @@ class AutoLoginManager:
                 logger.error(f"[-] [LOGIN_RATE_LIMITED] TikTok rate limit reached for {masked_acc} ('Maximum attempts reached').")
                 self.last_failure_reason = "IP_RATE_LIMITED"
                 report("LOGIN_RATE_LIMITED", "Maximum number of attempts reached (IP rate-limited by TikTok)")
-                self.adb.take_screenshot("login_failure_view.png")
+                self._capture_checkpoint("04_rate_limited")
                 return False
             
             # Check if "Log in with password" switch is present
@@ -215,9 +245,11 @@ class AutoLoginManager:
                 time.sleep(1)
                 self.adb.hide_keyboard()
                 time.sleep(1)
+                self._capture_checkpoint("04_password_entered")
 
                 # Click the red 'Log in' / 'Continue' submit button at bottom of Password step
                 logger.info("Clicking 'Log in' submit button...")
+                auth_request_time = time.time()
                 if not (self.adb.click_element(text="Log in") or 
                         self.adb.click_element(text="Continue") or 
                         self.adb.click_element(resource_id="login_btn") or
@@ -233,21 +265,21 @@ class AutoLoginManager:
 
             time.sleep(2)
 
-        # 7. Post-Submission Outcome Evaluation Loop (Up to 40s)
+        # 7. Post-Submission Outcome Evaluation Loop (Up to 45s)
         logger.info("Evaluating login submission outcome...")
         outcome_start = time.time()
         
-        while time.time() - outcome_start < 35:
+        while time.time() - outcome_start < 40:
             if self.adb.handle_birthdate_modal():
                 time.sleep(2)
             ui_content = self.adb.get_ui_text_content().lower()
             logger.info(f"[Auth Monitor] Active UI elements summary: {ui_content[:100]}...")
-            report("LOGIN_SUBMITTING", "Evaluating authentication response...")
 
             # Outcome A: Authenticated TikTok feed/profile is visible
             if self.adb.is_authenticated_user_feed():
                 logger.info(f"[+] [LOGIN_SUCCESS] Account {masked_acc} authenticated into main feed!")
                 self._dismiss_post_login_prompts()
+                self._capture_checkpoint("07_auth_success")
                 report("AUTHENTICATED", "User authenticated into main feed")
                 return True
 
@@ -255,11 +287,12 @@ class AutoLoginManager:
             if "enter 6-digit code" in ui_content or "digit code" in ui_content or "verification code" in ui_content or "verify" in ui_content:
                 logger.info("[2FA_REQUIRED] TikTok requested email verification code.")
                 report("2FA_REQUIRED", "Email verification code requested by TikTok")
+                self._capture_checkpoint("05_2fa_prompted")
                 
                 if gmail_addr and gmail_pwd:
-                    logger.info(f"Querying Gmail IMAP SSL for {gmail_addr}...")
+                    logger.info(f"Querying Gmail IMAP SSL for {gmail_addr} (min_timestamp: {auth_request_time:.0f})...")
                     email_srv = GmailVerificationService(gmail_addr, gmail_pwd)
-                    code = email_srv.fetch_tiktok_verification_code(timeout_seconds=45)
+                    code = email_srv.fetch_tiktok_verification_code(timeout_seconds=60, check_interval=3, min_timestamp=auth_request_time)
                     if code:
                         logger.info(f"Typing retrieved verification code '{code[:2]}****' into TikTok...")
                         self.adb.shell(f"input text {code}")
@@ -271,22 +304,68 @@ class AutoLoginManager:
                             if not self.adb.click_element(text="Next"):
                                 self.adb.click_element(text="Verify")
                         report("LOGIN_SUBMITTING", f"Submitted 2FA code {code[:2]}****")
-                        for _ in range(8):
+                        self._capture_checkpoint("06_2fa_code_submitted")
+
+                        # Validate 2FA submission response
+                        for _ in range(12):
                             time.sleep(1.5)
-                            self._dismiss_post_login_prompts()
+                            ui_post = self.adb.get_ui_text_content().lower()
+
+                            # 1. Successful authentication into feed or live stream
                             if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
                                 logger.info(f"[+] [LOGIN_SUCCESS] 2FA verified successfully for {masked_acc}!")
+                                self._dismiss_post_login_prompts()
+                                self._capture_checkpoint("07_auth_success")
                                 report("AUTHENTICATED", "2FA verified into main feed")
                                 return True
+
+                            # 2. Check for TikTok rejection ("Incorrect code", "Code expired")
+                            if any(err_kw in ui_post for err_kw in ["incorrect code", "code expired", "wrong code", "enter correct code"]):
+                                logger.warning(f"[-] TikTok rejected 2FA code ({code[:2]}****). UI message: {ui_post[:100]}")
+                                self._capture_checkpoint("06_2fa_code_rejected")
+
+                                # Check if "Resend code" is available
+                                if "resend code" in ui_post or "resend" in ui_post:
+                                    logger.info("Attempting to click 'Resend code' to request a brand-new code...")
+                                    if self.adb.click_element(text="Resend code") or self.adb.click_element(text="Resend"):
+                                        time.sleep(3)
+                                        resend_time = time.time()
+                                        report("LOGIN_SUBMITTING", "Requested fresh 2FA code via Resend")
+                                        new_code = email_srv.fetch_tiktok_verification_code(timeout_seconds=50, check_interval=3, min_timestamp=resend_time)
+                                        if new_code and new_code != code:
+                                            logger.info(f"Submitting newly resent 2FA code '{new_code[:2]}****'...")
+                                            for _ in range(6):
+                                                self.adb.shell("input keyevent 67")  # Backspace
+                                            self.adb.shell(f"input text {new_code}")
+                                            time.sleep(1)
+                                            self.adb.hide_keyboard()
+                                            self.adb.shell("input keyevent 66")
+                                            self._capture_checkpoint("06_2fa_resent_submitted")
+                                            report("LOGIN_SUBMITTING", f"Submitted resent 2FA code {new_code[:2]}****")
+                                            time.sleep(2)
+                                            continue
+                                break
+
+                            # 3. Rate limit on 2FA
+                            if any(rate_msg in ui_post for rate_msg in ["maximum number of attempts", "too many attempts", "try again later"]):
+                                logger.error(f"[-] [LOGIN_RATE_LIMITED] 2FA attempt limit reached for {masked_acc}.")
+                                self.last_failure_reason = "IP_RATE_LIMITED"
+                                self._capture_checkpoint("06_2fa_rate_limited")
+                                report("LOGIN_RATE_LIMITED", "Maximum attempts reached on 2FA")
+                                return False
+
+                            # 4. Only dismiss prompts if explicit post-login cues exist (never on error dialogs!)
+                            if any(cue in ui_post for cue in ["save login info", "save your login info", "sync contacts", "notifications"]):
+                                self._dismiss_post_login_prompts()
                     else:
                         logger.warning("[-] Gmail 2FA code retrieval timed out.")
                         report("LOGIN_FAILED", "2FA code timeout from Gmail IMAP")
-                        self.adb.take_screenshot("login_failure_view.png")
+                        self._capture_checkpoint("06_2fa_timeout")
                         return False
                 else:
                     logger.warning("[-] 2FA required but no Gmail App Password configured.")
                     report("LOGIN_BLOCKED", "2FA required but Gmail credentials missing")
-                    self.adb.take_screenshot("login_failure_view.png")
+                    self._capture_checkpoint("06_2fa_no_creds")
                     return False
 
             # Outcome C1: Rate limited / Maximum attempts reached (IP level block)
@@ -294,7 +373,7 @@ class AutoLoginManager:
                 logger.error(f"[-] [LOGIN_RATE_LIMITED] TikTok rate limit reached for {masked_acc} (IP flagged/blocked).")
                 self.last_failure_reason = "IP_RATE_LIMITED"
                 report("LOGIN_RATE_LIMITED", "Maximum number of attempts reached (IP rate-limited by TikTok)")
-                self.adb.take_screenshot("login_failure_view.png")
+                self._capture_checkpoint("06_rate_limited")
                 return False
 
             # Outcome C2: Incorrect credentials error
@@ -302,14 +381,14 @@ class AutoLoginManager:
                 logger.error(f"[-] [LOGIN_FAILED] Invalid credentials reported by TikTok for {masked_acc}.")
                 self.last_failure_reason = "INVALID_CREDENTIALS"
                 report("LOGIN_FAILED", "Invalid credentials reported by TikTok")
-                self.adb.take_screenshot("login_failure_view.png")
+                self._capture_checkpoint("06_invalid_creds")
                 return False
 
             # Outcome D: CAPTCHA / Puzzle challenge
             if any(c in ui_content for c in ["slide to complete", "select 2 objects", "security check", "puzzle", "captcha"]):
                 logger.warning(f"[-] [LOGIN_BLOCKED] Security challenge presented by TikTok.")
                 report("LOGIN_BLOCKED", "Interactive CAPTCHA/Puzzle challenge detected")
-                self.adb.take_screenshot("login_failure_view.png")
+                self._capture_checkpoint("06_captcha_blocked")
                 return False
 
             time.sleep(3)
@@ -318,18 +397,19 @@ class AutoLoginManager:
         if self.adb.is_login_or_signup_screen():
             logger.error("[-] [LOGIN_FAILED] Login screen remains visible after timeout (LOGIN_SCREEN_STILL_VISIBLE).")
             report("LOGIN_FAILED", "LOGIN_SCREEN_STILL_VISIBLE")
-            self.adb.take_screenshot("login_failure_view.png")
+            self._capture_checkpoint("07_login_screen_stuck")
             return False
 
         # Final verification check: dismiss any blocking popups first!
         self._dismiss_post_login_prompts()
         if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
             report("AUTHENTICATED", "User authenticated into main feed")
+            self._capture_checkpoint("07_auth_success")
             return True
 
         logger.error("[-] [LOGIN_FAILED] Application did not reach authenticated state.")
         report("LOGIN_FAILED", "App not in authenticated feed")
-        self.adb.take_screenshot("login_failure_view.png")
+        self._capture_checkpoint("07_auth_failed")
         return False
 
     def _dismiss_initial_onboarding(self, width: int = 720, height: int = 1280) -> None:
@@ -352,6 +432,11 @@ class AutoLoginManager:
     def _dismiss_post_login_prompts(self) -> None:
         """Dismisses post-login prompts: Save info, Notifications, Sync contacts, Birthdate modal, Tutorial."""
         time.sleep(1.0)
+        ui = self.adb.get_ui_text_content().lower()
+        # Safety guard: NEVER click generic dismiss buttons if on error or 2FA challenge screen!
+        if any(bad in ui for bad in ["incorrect", "code", "resend", "verify", "enter password", "too many attempts", "maximum number"]):
+            return
+
         self.adb.handle_birthdate_modal()
         for prompt_btn in [
             "Save", "Not now", "Don't allow", "Deny", "Skip", "Start watching",
