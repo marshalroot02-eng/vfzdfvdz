@@ -195,13 +195,20 @@ jobs:
           FGOS_BACKEND_URL: ${{ secrets.FGOS_BACKEND_URL || 'https://api.fgos.site/tiktok' }}
           RUNNER_SECRET: ${{ secrets.RUNNER_SECRET || 'runner_token' }}
 
-      - name: Upload Stream Verification Snapshot
+      - name: Upload Session Recordings & Screen Captures
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: stream-snapshot-runner-${{ matrix.runner_id }}
-          path: last_stream_view.png
+          name: session-artifacts-runner-${{ matrix.runner_id }}
+          path: |
+            auth_session.mp4
+            auth_recordings/
+            last_stream_view.png
+            login_failure_view.png
+            *.mp4
+            *.png
           if-no-files-found: ignore
+          retention-days: 7
 
       - name: Notify Central Backend Run Complete
         if: always()
