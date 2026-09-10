@@ -46,6 +46,8 @@ class ADBController:
         # 3. Check common paths
         common_paths = [
             r"C:\Program Files (x86)\Android\android-sdk\platform-tools\adb.exe",
+            r"C:\LDPlayer\LDPlayer14\adb.exe",
+            r"C:\LDPlayer\LDPlayer9\adb.exe",
             os.path.expanduser("~/Library/Android/sdk/platform-tools/adb"),
             os.path.expanduser("~/Android/Sdk/platform-tools/adb"),
             "/usr/bin/adb",
@@ -63,7 +65,10 @@ class ADBController:
         if self.device_id:
             cmd.extend(["-s", self.device_id])
         cmd.extend(args)
-        return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+        try:
+            return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+        except (FileNotFoundError, Exception) as e:
+            return subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr=str(e))
 
     def shell(self, cmd_str: str, timeout: int = 30) -> str:
         """Executes a command inside the Android shell."""
@@ -519,74 +524,101 @@ class ADBController:
                     return ((x1 + x2) // 2, (y1 + y2) // 2), y1
                 return None, 0
 
-            # Pass 1: Exact matches on action buttons / clickable elements (strictly below top header y >= 180)
-            is_action_btn = (text and text.lower() in ["log in", "continue", "next", "submit", "sign in"]) or (resource_id and "btn" in resource_id.lower())
+            # Action button labels: searches for these must NEVER match long paragraph TextViews
+            ACTION_LABELS = {
+                "agree", "agree and continue", "agree & continue", "accept", "accept all",
+                "continue", "confirm", "ok", "got it", "skip", "log in", "sign in", "sign up",
+                "submit", "next", "i agree", "done", "close", "cancel"
+            }
+            search_key = (text or content_desc or "").strip().lower()
+            is_action_search = search_key in ACTION_LABELS or (resource_id and any(k in resource_id.lower() for k in ["btn", "button"]))
+            is_login_action_btn = (text and text.lower().strip() in ["log in", "continue", "next", "submit", "sign in"]) or (resource_id and "btn" in resource_id.lower())
 
+            # Pass 1: Exact matches on action buttons / clickable elements
             for node in nodes:
-                node_text = node.attrib.get('text', '')
-                node_desc = node.attrib.get('content-desc', '')
+                node_text = node.attrib.get('text', '').strip()
+                node_desc = node.attrib.get('content-desc', '').strip()
                 node_id = node.attrib.get('resource-id', '')
                 bounds_str = node.attrib.get('bounds', '')
-                is_clickable = node.attrib.get('clickable', 'false') == 'true' or 'button' in node.attrib.get('class', '').lower() or 'edittext' in node.attrib.get('class', '').lower()
+                is_clickable = (
+                    node.attrib.get('clickable', 'false') == 'true' or
+                    'button' in node.attrib.get('class', '').lower() or
+                    'edittext' in node.attrib.get('class', '').lower()
+                )
 
                 matched = False
-                if text and (text.lower() == node_text.lower() or text.lower() == node_desc.lower()):
+                if text and (text.strip().lower() == node_text.lower() or text.strip().lower() == node_desc.lower()):
                     matched = True
-                elif content_desc and (content_desc.lower() == node_desc.lower() or content_desc.lower() == node_text.lower()):
+                elif content_desc and (content_desc.strip().lower() == node_desc.lower() or content_desc.strip().lower() == node_text.lower()):
                     matched = True
-                elif resource_id and resource_id.lower() == node_id.lower():
+                elif resource_id and resource_id.strip().lower() == node_id.lower():
                     matched = True
 
                 if matched and bounds_str:
                     coords, top_y = parse_bounds(bounds_str)
                     if coords:
-                        if is_action_btn:
+                        if is_login_action_btn:
                             # Action buttons MUST be in the main body (y >= 180), never in top header bar
                             if top_y >= 180 and is_clickable:
                                 return coords
                         elif is_clickable or top_y >= 180:
                             return coords
 
-            # Pass 2: Any exact match (excluding top header for action buttons)
+            # Pass 2: Any exact match (excluding top header for login action buttons)
             for node in nodes:
-                node_text = node.attrib.get('text', '')
-                node_desc = node.attrib.get('content-desc', '')
+                node_text = node.attrib.get('text', '').strip()
+                node_desc = node.attrib.get('content-desc', '').strip()
                 node_id = node.attrib.get('resource-id', '')
                 bounds_str = node.attrib.get('bounds', '')
 
                 matched = False
-                if text and (text.lower() == node_text.lower() or text.lower() == node_desc.lower()):
+                if text and (text.strip().lower() == node_text.lower() or text.strip().lower() == node_desc.lower()):
                     matched = True
-                elif content_desc and (content_desc.lower() == node_desc.lower() or content_desc.lower() == node_text.lower()):
+                elif content_desc and (content_desc.strip().lower() == node_desc.lower() or content_desc.strip().lower() == node_text.lower()):
                     matched = True
-                elif resource_id and resource_id.lower() == node_id.lower():
+                elif resource_id and resource_id.strip().lower() == node_id.lower():
                     matched = True
 
                 if matched and bounds_str:
                     coords, top_y = parse_bounds(bounds_str)
                     if coords:
-                        if is_action_btn and top_y < 180:
+                        if is_login_action_btn and top_y < 180:
                             continue
                         return coords
 
-            # Pass 3: Substring matches (below top header y >= 180)
+            # Pass 3: Substring matches (guarded: NEVER match action buttons against paragraphs or unclickable TextViews)
             for node in nodes:
-                node_text = node.attrib.get('text', '')
-                node_desc = node.attrib.get('content-desc', '')
+                node_text = node.attrib.get('text', '').strip()
+                node_desc = node.attrib.get('content-desc', '').strip()
                 node_id = node.attrib.get('resource-id', '')
                 bounds_str = node.attrib.get('bounds', '')
+                is_clickable = (
+                    node.attrib.get('clickable', 'false') == 'true' or
+                    'button' in node.attrib.get('class', '').lower() or
+                    'edittext' in node.attrib.get('class', '').lower()
+                )
+
+                # Paragraph guard: For action-button searches, DO NOT allow matching against long paragraph TextViews
+                if is_action_search:
+                    target_candidate = node_text or node_desc
+                    if not is_clickable:
+                        continue
+                    if len(target_candidate) > 28 or len(target_candidate) > len(search_key) + 8:
+                        continue
+                    if any(p in target_candidate for p in [".", ",", "\n", ";"]):
+                        continue
 
                 matched = False
-                if text and (text.lower() in node_text.lower() or text.lower() in node_desc.lower()):
+                if text and (text.strip().lower() in node_text.lower() or text.strip().lower() in node_desc.lower()):
                     matched = True
-                elif content_desc and (content_desc.lower() in node_desc.lower() or content_desc.lower() in node_text.lower()):
+                elif content_desc and (content_desc.strip().lower() in node_desc.lower() or content_desc.strip().lower() in node_text.lower()):
                     matched = True
-                elif resource_id and resource_id.lower() in node_id.lower():
+                elif resource_id and resource_id.strip().lower() in node_id.lower():
                     matched = True
 
                 if matched and bounds_str:
                     coords, top_y = parse_bounds(bounds_str)
-                    if coords and (not is_action_btn or top_y >= 180):
+                    if coords and (not is_login_action_btn or top_y >= 180):
                         return coords
         except Exception as e:
             logger.debug(f"Element parse error: {e}")
@@ -628,40 +660,14 @@ class ADBController:
         return False
 
     def close_legal_webview(self) -> bool:
-        """
-        Closes an open full-screen Terms of Service / Privacy Policy legal WebView.
-        Taps the top-left back arrow across common device densities and sends KEYCODE_BACK.
-        """
-        w = self.screen_width or 720
-        h = self.screen_height or 1280
-        arrow_x = int(w * 0.08)
-        arrow_y = int(h * 0.065)
-        
-        logger.info(f"[+] Closing legal WebView: tapping top-left back arrow at ({arrow_x}, {arrow_y})...")
-        self.shell(f"input tap {arrow_x} {arrow_y}")
-        time.sleep(0.3)
-        self.shell("input tap 55 74")
-        time.sleep(0.3)
-        self.shell(f"input tap {int(w * 0.07)} {int(h * 0.09)}")
-        time.sleep(0.3)
-
-        # Also try native Back button element if detected
-        self.click_element(content_desc="Back")
-        self.click_element(text="Back")
-        self.click_element(content_desc="Close")
-        self.click_element(text="Close")
-        
-        # Send Android Back keyevent 4 (standard Android back navigation)
-        self.shell("input keyevent 4")
-        time.sleep(0.8)
-        
-        # Verify if still on terms screen; if so, tap arrow again and send second back
-        if self.is_terms_or_policy_screen():
-            logger.info("[+] WebView still open. Retrying tap and back keyevent...")
-            self.shell(f"input tap {arrow_x} {arrow_y}")
+        """Closes legal WebView overlay and returns to TikTok login flow by pressing Back exactly once."""
+        logger.info("[+] Closing legal WebView: pressing Back exactly once...")
+        if self.click_element(content_desc="Back") or self.click_element(text="Back") or \
+           self.click_element(content_desc="Close") or self.click_element(text="Close"):
+            time.sleep(0.8)
+        else:
             self.shell("input keyevent 4")
-            time.sleep(1.0)
-            
+            time.sleep(0.8)
         return not self.is_terms_or_policy_screen()
 
     def get_ui_text_content(self) -> str:
@@ -719,15 +725,76 @@ class ADBController:
         return any(phrase in ui_text for phrase in login_phrases)
 
     def is_terms_or_policy_screen(self) -> bool:
-        """Checks if TikTok's Terms of Service or Privacy Policy document/prompt is visible."""
+        """
+        Checks if TikTok is displaying a full Terms of Service or Privacy Policy legal document/WebView.
+        Guarantees that a login/signup screen containing a footer legal disclaimer is NOT classified as a legal document.
+        """
         ui_text = self.get_ui_text_content().lower()
         if not ui_text:
             return False
-        return any(k in ui_text for k in [
-            "terms of service", "privacy policy", "terms and conditions", "terms of use",
-            "welcome to tiktok", "usds joint venture", "what services are covered",
-            "contacting tiktok", "information we collect"
+
+        # If UI does not contain any terms/privacy keywords, it is definitely not a legal screen
+        if not any(k in ui_text for k in ["terms", "privacy", "policy"]):
+            return False
+
+        # Strong guard: Login and signup controls indicate a login/signup screen, NOT a legal document
+        login_controls = [
+            "use phone / email / username",
+            "use phone / email",
+            "use phone",
+            "log in to tiktok",
+            "sign up for tiktok",
+            "continue with google",
+            "continue with facebook",
+            "continue with apple",
+            "continue with twitter",
+            "enter email or username",
+            "email or username",
+            "email / username",
+            "already have an account",
+            "log in",
+            "sign up",
+            "phone / email",
+        ]
+        if any(ctrl in ui_text for ctrl in login_controls):
+            return False
+
+        # Check for full legal document title/header
+        has_doc_title = any(t in ui_text for t in [
+            "terms of service | tiktok",
+            "privacy policy | tiktok",
+            "tiktok terms of service",
+            "tiktok privacy policy",
         ])
+
+        # Check for known legal activity (e.g. CrossPlatformActivity)
+        try:
+            fg = self.get_foreground_activity().lower()
+            is_legal_activity = "crossplatformactivity" in fg or "webkit" in fg
+        except Exception:
+            is_legal_activity = False
+
+        # Check for full legal body phrases
+        legal_body_phrases = [
+            "welcome to tiktok",
+            "usds joint venture",
+            "what services are covered",
+            "contacting tiktok",
+            "information we collect",
+            "summary of key terms",
+            "these terms of service",
+            "user terms of service",
+        ]
+        has_legal_body = sum(1 for phrase in legal_body_phrases if phrase in ui_text) >= 1
+
+        if has_doc_title:
+            return True
+        if is_legal_activity and any(k in ui_text for k in ["terms of service", "privacy policy", "terms and conditions"]):
+            return True
+        if has_legal_body and any(k in ui_text for k in ["terms of service", "privacy policy", "terms"]):
+            return True
+
+        return False
 
     def is_authenticated_user_feed(self) -> bool:
         """Verifies whether the TikTok app is in an authenticated user state."""
@@ -835,8 +902,8 @@ class ADBController:
         """Dismisses common prompts (Full-screen tooltips, System ANRs, Notifications, Cookie consents) using UI Inspection."""
         logger.info("Inspecting UI hierarchy to dismiss modal dialogs...")
         
-        # 1. Dismiss Android Immersive / Full-screen tooltips ("Got it" / "OK" / "Agree")
-        if self.click_element(text="Got it") or self.click_element(text="OK") or self.click_element(text="Agree"):
+        # 1. Dismiss Android Immersive / Full-screen tooltips ("Got it" / "OK" / "Agree and continue")
+        if self.click_element(text="Got it") or self.click_element(text="OK") or self.click_element(text="Agree and continue"):
             time.sleep(0.5)
 
         # 2. Dismiss System ANR Dialogs if present by exact button click
