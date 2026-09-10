@@ -326,10 +326,13 @@ class AutoLoginManager:
                             ui_post = self.adb.get_ui_text_content().lower()
 
                             # Check for and AGREE to Terms & Conditions modal if loaded post-2FA
-                            if any(k in ui_post for k in ["terms of service", "privacy policy", "terms"]):
+                            if any(k in ui_post for k in ["terms of service", "privacy policy", "terms and conditions", "terms of use", "agree and continue"]):
                                 logger.info("[2FA_POST_LOGIN] Terms & Conditions modal presented. Explicitly AGREEING...")
                                 self.handle_terms_and_conditions(width, height)
                                 time.sleep(1.5)
+                                # Verify the terms screen is actually gone before continuing
+                                if not self.adb.is_terms_or_policy_screen():
+                                    logger.info("[2FA_POST_LOGIN] Terms/consent screen dismissed successfully.")
                                 continue
 
                             # 1. Successful authentication into feed or live stream
@@ -441,7 +444,7 @@ class AutoLoginManager:
         terms_detected = any(k in ui_text for k in [
             "terms of service", "privacy policy", "terms and conditions", 
             "terms of use", "by continuing, you agree", "agree to tiktok", 
-            "agree and continue", "terms"
+            "agree and continue"
         ])
         if not terms_detected:
             return False
@@ -450,24 +453,6 @@ class AutoLoginManager:
         w = self.adb.screen_width or width or 720
         h = self.adb.screen_height or height or 1280
 
-        # Check: Is this a full-screen legal document WebView ('Terms of Service', 'Privacy Policy')?
-        # That document has NO Agree button (acceptance is implicit "By continuing...").
-        # We must immediately dismiss it via top-left back arrow / Android Back to return to the login flow!
-        is_full_document_webview = (
-            "terms of service | tiktok" in ui_text or 
-            "privacy policy | tiktok" in ui_text or
-            "terms of service" in ui_text or
-            "privacy policy" in ui_text or
-            "welcome to tiktok" in ui_text or
-            "usds joint venture" in ui_text or
-            ("terms" in ui_text and ("contacting tiktok" in ui_text or "what services are covered" in ui_text or "information we collect" in ui_text))
-        )
-        if is_full_document_webview:
-            logger.info("[TERMS_AGREEMENT] Detected full legal text WebView document (no agree button exists on document). Dismissing via back arrow...")
-            self.adb.close_legal_webview()
-            time.sleep(1.2)
-            ui_text = self.adb.get_ui_text_content().lower()
-
         agreement_buttons = [
             "Agree and continue", "Agree & continue", "Agree", "I agree",
             "Accept", "Accept all", "Continue", "Confirm", "Got it", "OK"
@@ -475,7 +460,7 @@ class AutoLoginManager:
 
         agreed = False
 
-        # Step 1: Check for checkboxes and agreement buttons on consent prompt/dialog
+        # Step 1: ALWAYS try agree buttons FIRST (consent dialog has buttons; WebView does not)
         for scroll_idx in range(3):
             # Check for any unselected checkbox / radio button
             if self.adb.click_first_unchecked_checkbox():
@@ -515,16 +500,40 @@ class AutoLoginManager:
                 if btn.lower() in ui_after:
                     self.adb.click_element(text=btn)
                     time.sleep(1.0)
+            # Verify the terms screen is actually gone
+            if self.adb.is_terms_or_policy_screen():
+                logger.warning("[TERMS_AGREEMENT] Terms screen still visible after clicking agree. Retrying...")
+                self.adb.click_first_unchecked_checkbox()
+                time.sleep(0.3)
+                for btn in agreement_buttons:
+                    if self.adb.click_element(text=btn):
+                        time.sleep(1.5)
+                        break
             return True
 
-        # Step 3: If still showing legal text WebView, ensure it is closed
+        # Step 3: No agree button found — this is likely a full legal document WebView.
+        # Only NOW dismiss via back arrow (the document has no accept button).
+        is_full_document_webview = (
+            "terms of service | tiktok" in ui_text or 
+            "privacy policy | tiktok" in ui_text or
+            "welcome to tiktok" in ui_text or
+            "usds joint venture" in ui_text or
+            ("contacting tiktok" in ui_text or "what services are covered" in ui_text or "information we collect" in ui_text)
+        )
+        if is_full_document_webview:
+            logger.info("[TERMS_AGREEMENT] Full legal text WebView (no agree button found). Dismissing via back arrow...")
+            self.adb.close_legal_webview()
+            time.sleep(1.2)
+            return not self.adb.is_terms_or_policy_screen()
+
+        # Step 4: Still showing terms but no buttons and not a document — try closing
         ui_check_final = self.adb.get_ui_text_content().lower()
         if any(k in ui_check_final for k in ["terms of service", "privacy policy"]):
             logger.info("[TERMS_AGREEMENT] Ensuring legal document view is closed...")
             self.adb.close_legal_webview()
             time.sleep(1.0)
 
-        return True
+        return not self.adb.is_terms_or_policy_screen()
 
     def _dismiss_initial_onboarding(self, width: int = 720, height: int = 1280) -> None:
         """Dismisses splash, terms, interest selection, tutorial swipe overlays, and birthdate modal."""
