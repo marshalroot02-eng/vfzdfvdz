@@ -545,6 +545,7 @@ class TikTokBoosterOrchestrator:
                     "LOGIN_REQUIRED": RunnerState.LOGIN_REQUIRED,
                     "LOGIN_STARTED": RunnerState.LOGIN_STARTED,
                     "LOGIN_SUBMITTED": RunnerState.LOGIN_SUBMITTED,
+                    "LOGIN_SUBMITTING": RunnerState.LOGIN_SUBMITTING,
                     "LOGIN_VERIFYING": RunnerState.LOGIN_VERIFYING,
                     "2FA_REQUIRED": RunnerState.TWO_FA_REQUIRED,
                     "AUTHENTICATED": RunnerState.AUTHENTICATED,
@@ -554,7 +555,7 @@ class TikTokBoosterOrchestrator:
                     "LOGIN_RATE_LIMITED": RunnerState.LOGIN_RATE_LIMITED,
                     "LOGIN_BLOCKED": RunnerState.LOGIN_BLOCKED,
                 }
-                mapped_state = state_mapping.get(phase_name, RunnerState.LOGIN_REQUIRED)
+                mapped_state = state_mapping.get(phase_name, RunnerState.LOGIN_SUBMITTING if "SUBMIT" in phase_name else RunnerState.LOGIN_REQUIRED)
                 self.add_step_log("AUTH_PHASE", f"{phase_name}: {phase_reason}")
                 self.transition_state(mapped_state, reason=f"{phase_name}: {phase_reason}")
                 self.send_heartbeat(include_screenshot=True, reason=f"{phase_name}: {phase_reason}")
@@ -787,7 +788,13 @@ class TikTokBoosterOrchestrator:
         if self.adb.is_live_stream_active():
             self.transition_state(RunnerState.WATCHING, reason="TikTok Live stream player confirmed active and receiving video")
         else:
-            self.transition_state(RunnerState.OPENING_LIVE, reason="Waiting for live player buffer to confirm active stream")
+            logger.info("Live player not confirmed active yet; kickstarting video surface...")
+            self.adb.kickstart_video_surface()
+            time.sleep(2)
+            if self.adb.is_live_stream_active():
+                self.transition_state(RunnerState.WATCHING, reason="TikTok Live stream player confirmed active after kickstart")
+            else:
+                self.transition_state(RunnerState.OPENING_LIVE, reason="Waiting for live player buffer to confirm active stream")
 
         self.send_heartbeat(include_screenshot=True, reason="Live room loaded, starting auto-liker loop")
 
