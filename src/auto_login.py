@@ -343,7 +343,46 @@ class AutoLoginManager:
                                 report("AUTHENTICATED", "2FA verified into main feed")
                                 return True
 
-                            # 2. Check for TikTok rejection ("Incorrect code", "Code expired")
+                            # 2. In-app WebView or blank overlay post-2FA resolution
+                            if self.adb.is_webview_or_blank_overlay() and check_idx >= 2:
+                                logger.info(f"[2FA_POST_LOGIN] In-app WebView or blank overlay detected (check {check_idx}). Attempting resolution...")
+                                w = self.adb.screen_width or width or 720
+                                h = self.adb.screen_height or height or 1280
+
+                                # Step A: Tap bottom consent/agreement area in case button is rendered in HTML
+                                self.adb.shell(f"input tap {w // 2} {int(h * 0.90)}")
+                                time.sleep(1.5)
+                                if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
+                                    logger.info(f"[+] [LOGIN_SUCCESS] 2FA verified into feed after consent tap!")
+                                    self._dismiss_post_login_prompts()
+                                    self._capture_checkpoint("07_auth_success")
+                                    report("AUTHENTICATED", "2FA verified into main feed")
+                                    return True
+
+                                # Step B: Dismiss stuck WebView overlay via Back keyevent
+                                logger.info("[2FA_POST_LOGIN] Dismissing stuck WebView overlay via Back keyevent...")
+                                self.adb.shell("input keyevent 4")
+                                time.sleep(1.5)
+                                if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
+                                    logger.info(f"[+] [LOGIN_SUCCESS] 2FA verified into feed after dismissing stuck overlay!")
+                                    self._dismiss_post_login_prompts()
+                                    self._capture_checkpoint("07_auth_success")
+                                    report("AUTHENTICATED", "2FA verified into main feed")
+                                    return True
+
+                                # Step C: If still hung on WebView/overlay after 4 checks, warm-launch MainActivity
+                                if check_idx >= 4:
+                                    logger.info("[2FA_POST_LOGIN] Warm-launching MainActivity to restore authenticated feed...")
+                                    self.adb.shell("am start -n com.zhiliaoapp.musically/com.ss.android.ugc.aweme.main.MainActivity")
+                                    time.sleep(2.5)
+                                    if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
+                                        logger.info(f"[+] [LOGIN_SUCCESS] 2FA verified into feed after warm MainActivity start!")
+                                        self._dismiss_post_login_prompts()
+                                        self._capture_checkpoint("07_auth_success")
+                                        report("AUTHENTICATED", "2FA verified into main feed")
+                                        return True
+
+                            # 3. Check for TikTok rejection ("Incorrect code", "Code expired")
                             if any(err_kw in ui_post for err_kw in ["incorrect code", "code expired", "wrong code", "enter correct code"]):
                                 logger.warning(f"[-] TikTok rejected 2FA code ({code[:2]}****). UI message: {ui_post[:100]}")
                                 self._capture_checkpoint("06_2fa_code_rejected")
@@ -427,6 +466,19 @@ class AutoLoginManager:
             report("AUTHENTICATED", "User authenticated into main feed")
             self._capture_checkpoint("07_auth_success")
             return True
+
+        # Fallback: If trapped in a stuck WebView / blank overlay before declaring failure
+        if self.adb.is_webview_or_blank_overlay():
+            logger.info("Trapped in WebView or blank overlay at final check. Performing rescue via Back + MainActivity launch...")
+            self.adb.shell("input keyevent 4")
+            time.sleep(1.5)
+            self.adb.shell("am start -n com.zhiliaoapp.musically/com.ss.android.ugc.aweme.main.MainActivity")
+            time.sleep(2.5)
+            self._dismiss_post_login_prompts()
+            if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
+                report("AUTHENTICATED", "User authenticated into main feed after overlay rescue")
+                self._capture_checkpoint("07_auth_success")
+                return True
 
         logger.error("[-] [LOGIN_FAILED] Application did not reach authenticated state.")
         report("LOGIN_FAILED", "App not in authenticated feed")
