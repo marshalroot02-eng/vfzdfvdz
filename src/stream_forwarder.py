@@ -157,6 +157,7 @@ class ScrcpyStreamForwarder:
         """Connects to local Scrcpy TCP sockets (Video #1, Control #2) with retry backoff and validates handshake."""
         self._ensure_scrcpy_server()
         self._close_scrcpy_sockets()
+        self.cached_header_chunk = b""
 
         max_attempts = 5
         for attempt in range(1, max_attempts + 1):
