@@ -808,21 +808,88 @@ class ADBController:
         # If UI text is blank/sparse (video surface playing in software GLES AVD), verify foreground activity
         fg = self.get_foreground_activity().lower()
         if any(act in fg for act in ["mainactivity", ".main."]) and not any(k in fg for k in ["login", "signup", "auth", "verify", "crossplatform", "spark", "bullet", "webview"]):
-            return True
+            if not self.is_screen_visually_blank_or_white(threshold=0.96):
+                return True
+        return False
+
+    def is_screen_visually_blank_or_white(self, threshold: float = 0.95) -> bool:
+        """
+        Determines whether the Android screen is visually blank or white (e.g. stalled WebView or GLES compositing hang).
+        Samples pixels strictly within the application viewport (excluding top status bar y<50 and bottom nav y>h-50).
+        """
+        try:
+            from PIL import Image
+            cmd = [self.adb_bin]
+            if self.device_id:
+                cmd.extend(["-s", self.device_id])
+            cmd.extend(["exec-out", "screencap", "-p"])
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=4)
+            if res.returncode == 0 and len(res.stdout) > 1000:
+                im = Image.open(io.BytesIO(res.stdout)).convert("RGB")
+                w, h = im.size
+                if w > 100 and h > 200:
+                    cropped = im.crop((20, 50, w - 20, h - 50))
+                    cropped.thumbnail((72, 128), Image.Resampling.NEAREST)
+                    pixels = list(cropped.getdata())
+                    if pixels:
+                        white_count = sum(1 for r, g, b in pixels if r > 235 and g > 235 and b > 235)
+                        ratio = white_count / len(pixels)
+                        return ratio >= threshold
+        except Exception as e:
+            logger.debug(f"Visual blank check notice: {e}")
         return False
 
     def is_webview_or_blank_overlay(self) -> bool:
-        """Checks if a WebView container, legal overlay, or blank white screen is active without native controls."""
+        """
+        Multi-signal detection for WebView containers, legal overlays, or blank white screens.
+        Combines foreground Activity inspection, visual blankness testing, and UIAutomator token analysis.
+        """
         try:
             fg = self.get_foreground_activity().lower()
-            if any(act in fg for act in ["crossplatformactivity", "sparkactivity", "bulletcontaineractivity", "webkit", "webview"]):
+            known_containers = [
+                "crossplatformactivity", "sparkactivity", "bulletcontaineractivity",
+                "webkit", "webview", "terms", "agreement", "i18nsignupactivitywithnoanimation"
+            ]
+            if any(act in fg for act in known_containers):
                 return True
         except Exception:
             pass
-        ui_text = self.get_ui_text_content().strip()
-        if len(ui_text) == 0 and not self.is_login_or_signup_screen() and not self.is_authenticated_user_feed():
+
+        # If already in an active login screen with input fields, it is NOT an overlay
+        if self.is_login_or_signup_screen():
+            return False
+
+        # If already confirmed in authenticated feed, it is NOT an overlay
+        if self.is_authenticated_user_feed():
+            return False
+
+        # Visual blank/white screen test (catches stalled WebViews even if residual accessibility nodes exist)
+        if self.is_screen_visually_blank_or_white(threshold=0.95):
             return True
+
+        # Sparse UI content check (e.g. only "Back" / "Report a problem" / "TikTok" with no form fields)
+        ui_text = self.get_ui_text_content().strip().lower()
+        if len(ui_text) == 0:
+            return True
+
+        # If text is sparse (< 50 chars) and contains only generic header/footer tokens without feed or login elements
+        GENERIC_TOKENS = ["back", "report a problem", "tiktok", "close", "cancel", "help", "loading"]
+        tokens = [t.strip() for t in ui_text.split() if t.strip()]
+        if len(ui_text) < 50 and all(any(k in tok for k in GENERIC_TOKENS) for tok in tokens):
+            return True
+
         return False
+
+    def get_recovery_diagnostics(self) -> dict:
+        """Captures diagnostic snapshot when recovery action is taken."""
+        return {
+            "timestamp": time.time(),
+            "foreground_activity": self.get_foreground_activity(),
+            "ui_text_summary": self.get_ui_text_content()[:120],
+            "is_white_screen": self.is_screen_visually_blank_or_white(threshold=0.95),
+            "is_overlay": self.is_webview_or_blank_overlay()
+        }
+
 
     def is_live_stream_active(self) -> bool:
         """
