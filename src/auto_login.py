@@ -319,104 +319,28 @@ class AutoLoginManager:
                         self._capture_checkpoint("06_2fa_code_submitted")
 
                         # Validate 2FA submission response (TikTok auto-submits upon 6th digit)
-                        for check_idx in range(25):
-                            time.sleep(2.0)
-                            if check_idx in [3, 8]:
-                                self.adb.kickstart_video_surface()
-                            ui_post = self.adb.get_ui_text_content().lower()
-
-                            # Check for and AGREE to Terms & Conditions modal if loaded post-2FA
-                            if any(k in ui_post for k in ["terms of service", "privacy policy", "terms and conditions", "terms of use", "agree and continue"]):
-                                logger.info("[2FA_POST_LOGIN] Terms & Conditions modal presented. Explicitly AGREEING...")
-                                self.handle_terms_and_conditions(width, height)
-                                time.sleep(1.5)
-                                # Verify the terms screen is actually gone before continuing
-                                if not self.adb.is_terms_or_policy_screen():
-                                    logger.info("[2FA_POST_LOGIN] Terms/consent screen dismissed successfully.")
-                                continue
-
-                            # 1. Successful authentication into feed or live stream
-                            if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
-                                logger.info(f"[+] [LOGIN_SUCCESS] 2FA verified successfully for {masked_acc}!")
-                                self._dismiss_post_login_prompts()
-                                self._capture_checkpoint("07_auth_success")
-                                report("AUTHENTICATED", "2FA verified into main feed")
-                                return True
-
-                            # 2. In-app WebView or blank overlay post-2FA resolution
-                            if self.adb.is_webview_or_blank_overlay() and check_idx >= 2:
-                                logger.info(f"[2FA_POST_LOGIN] In-app WebView or blank overlay detected (check {check_idx}). Attempting resolution...")
-                                w = self.adb.screen_width or width or 720
-                                h = self.adb.screen_height or height or 1280
-
-                                # Step A: Tap bottom consent/agreement area in case button is rendered in HTML
-                                self.adb.shell(f"input tap {w // 2} {int(h * 0.90)}")
-                                time.sleep(1.5)
-                                if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
-                                    logger.info(f"[+] [LOGIN_SUCCESS] 2FA verified into feed after consent tap!")
-                                    self._dismiss_post_login_prompts()
-                                    self._capture_checkpoint("07_auth_success")
-                                    report("AUTHENTICATED", "2FA verified into main feed")
-                                    return True
-
-                                # Step B: Dismiss stuck WebView overlay via Back keyevent
-                                logger.info("[2FA_POST_LOGIN] Dismissing stuck WebView overlay via Back keyevent...")
-                                self.adb.shell("input keyevent 4")
-                                time.sleep(1.5)
-                                if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
-                                    logger.info(f"[+] [LOGIN_SUCCESS] 2FA verified into feed after dismissing stuck overlay!")
-                                    self._dismiss_post_login_prompts()
-                                    self._capture_checkpoint("07_auth_success")
-                                    report("AUTHENTICATED", "2FA verified into main feed")
-                                    return True
-
-                                # Step C: If still hung on WebView/overlay after 4 checks, warm-launch MainActivity
-                                if check_idx >= 4:
-                                    logger.info("[2FA_POST_LOGIN] Warm-launching MainActivity to restore authenticated feed...")
-                                    self.adb.shell("am start -n com.zhiliaoapp.musically/com.ss.android.ugc.aweme.main.MainActivity")
-                                    time.sleep(2.5)
-                                    if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
-                                        logger.info(f"[+] [LOGIN_SUCCESS] 2FA verified into feed after warm MainActivity start!")
-                                        self._dismiss_post_login_prompts()
-                                        self._capture_checkpoint("07_auth_success")
-                                        report("AUTHENTICATED", "2FA verified into main feed")
+                        if self.validate_post_2fa_transition(masked_acc, width, height, state_callback):
+                            return True
+                        
+                        # If resend is needed, check UI for resend
+                        ui_post = self.adb.get_ui_text_content().lower()
+                        if "resend code" in ui_post or "resend" in ui_post:
+                            logger.info("Attempting to click 'Resend code' to request a brand-new code...")
+                            if self.adb.click_element(text="Resend code") or self.adb.click_element(text="Resend"):
+                                time.sleep(3)
+                                resend_time = time.time()
+                                report("LOGIN_SUBMITTING", "Requested fresh 2FA code via Resend")
+                                new_code = email_srv.fetch_tiktok_verification_code(timeout_seconds=50, check_interval=3, min_timestamp=resend_time)
+                                if new_code and new_code != code:
+                                    logger.info(f"Submitting newly resent 2FA code '{new_code[:2]}****'...")
+                                    for _ in range(6):
+                                        self.adb.shell("input keyevent 67")  # Backspace
+                                    self.adb.shell(f"input text {new_code}")
+                                    self._capture_checkpoint("06_2fa_resent_submitted")
+                                    report("LOGIN_SUBMITTING", f"Submitted resent 2FA code {new_code[:2]}****")
+                                    time.sleep(2)
+                                    if self.validate_post_2fa_transition(masked_acc, width, height, state_callback):
                                         return True
-
-                            # 3. Check for TikTok rejection ("Incorrect code", "Code expired")
-                            if any(err_kw in ui_post for err_kw in ["incorrect code", "code expired", "wrong code", "enter correct code"]):
-                                logger.warning(f"[-] TikTok rejected 2FA code ({code[:2]}****). UI message: {ui_post[:100]}")
-                                self._capture_checkpoint("06_2fa_code_rejected")
-
-                                # Check if "Resend code" is available
-                                if "resend code" in ui_post or "resend" in ui_post:
-                                    logger.info("Attempting to click 'Resend code' to request a brand-new code...")
-                                    if self.adb.click_element(text="Resend code") or self.adb.click_element(text="Resend"):
-                                        time.sleep(3)
-                                        resend_time = time.time()
-                                        report("LOGIN_SUBMITTING", "Requested fresh 2FA code via Resend")
-                                        new_code = email_srv.fetch_tiktok_verification_code(timeout_seconds=50, check_interval=3, min_timestamp=resend_time)
-                                        if new_code and new_code != code:
-                                            logger.info(f"Submitting newly resent 2FA code '{new_code[:2]}****'...")
-                                            for _ in range(6):
-                                                self.adb.shell("input keyevent 67")  # Backspace
-                                            self.adb.shell(f"input text {new_code}")
-                                            self._capture_checkpoint("06_2fa_resent_submitted")
-                                            report("LOGIN_SUBMITTING", f"Submitted resent 2FA code {new_code[:2]}****")
-                                            time.sleep(2)
-                                            continue
-                                break
-
-                            # 3. Rate limit on 2FA
-                            if any(rate_msg in ui_post for rate_msg in ["maximum number of attempts", "too many attempts", "try again later"]):
-                                logger.error(f"[-] [LOGIN_RATE_LIMITED] 2FA attempt limit reached for {masked_acc}.")
-                                self.last_failure_reason = "IP_RATE_LIMITED"
-                                self._capture_checkpoint("06_2fa_rate_limited")
-                                report("LOGIN_RATE_LIMITED", "Maximum attempts reached on 2FA")
-                                return False
-
-                            # 4. Only dismiss prompts if explicit post-login cues exist (never on error dialogs!)
-                            if any(cue in ui_post for cue in ["save login info", "save your login info", "sync contacts", "notifications"]):
-                                self._dismiss_post_login_prompts()
                     else:
                         logger.warning("[-] Gmail 2FA code retrieval timed out.")
                         report("LOGIN_FAILED", "2FA code timeout from Gmail IMAP")
@@ -483,6 +407,120 @@ class AutoLoginManager:
         logger.error("[-] [LOGIN_FAILED] Application did not reach authenticated state.")
         report("LOGIN_FAILED", "App not in authenticated feed")
         self._capture_checkpoint("07_auth_failed")
+        return False
+
+    def validate_post_2fa_transition(
+        self, 
+        masked_acc: str = "***", 
+        width: int = 720, 
+        height: int = 1280, 
+        state_callback: Optional[Callable[[str, str], None]] = None,
+        max_checks: int = 15
+    ) -> bool:
+        """
+        Bounded Post-2FA White Screen / Overlay Recovery State Machine.
+        Validates post-2FA submission response, dismisses Terms modals,
+        detects blank white screens / webview overlays, and safely recovers
+        to authenticated MainActivity feed with bounded attempts (max 2).
+        """
+        def report(st, msg):
+            if state_callback:
+                state_callback(st, msg)
+
+        recovery_attempts = 0
+        for check_idx in range(max_checks):
+            time.sleep(2.0)
+            if check_idx in [2, 6]:
+                self.adb.kickstart_video_surface()
+            ui_post = self.adb.get_ui_text_content().lower()
+
+            # 1. Successful authentication into feed or live stream (Checked first on every tick)
+            if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
+                logger.info(f"[+] [LOGIN_SUCCESS] 2FA verified successfully for {masked_acc}!")
+                self._dismiss_post_login_prompts()
+                self._capture_checkpoint("07_auth_success")
+                report("AUTHENTICATED", "2FA verified into main feed")
+                return True
+
+            # 2. Check for and AGREE to Terms & Conditions modal if loaded post-2FA
+            if any(k in ui_post for k in ["terms of service", "privacy policy", "terms and conditions", "terms of use", "agree and continue"]):
+                logger.info("[2FA_POST_LOGIN] Terms & Conditions modal presented. Explicitly AGREEING...")
+                self.handle_terms_and_conditions(width, height)
+                time.sleep(1.5)
+                if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
+                    logger.info("[2FA_POST_LOGIN] Terms/consent screen dismissed into authenticated feed.")
+                    self._dismiss_post_login_prompts()
+                    self._capture_checkpoint("07_auth_success")
+                    report("AUTHENTICATED", "2FA verified into main feed")
+                    return True
+                continue
+
+            # 3. Bounded Post-2FA White Screen / Overlay Recovery State Machine
+            if check_idx >= 2 and recovery_attempts < 2:
+                if self.adb.is_webview_or_blank_overlay():
+                    recovery_attempts += 1
+                    diag = self.adb.get_recovery_diagnostics() if hasattr(self.adb, 'get_recovery_diagnostics') else {}
+                    logger.info(f"[2FA_POST_LOGIN] Overlay recovery #{recovery_attempts}/2 triggered: {diag}")
+
+                    # Action A: Tap bottom consent area in case an HTML webview button is present
+                    w = self.adb.screen_width or width or 720
+                    h = self.adb.screen_height or height or 1280
+                    self.adb.shell(f"input tap {w // 2} {int(h * 0.90)}")
+                    time.sleep(1.5)
+                    if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
+                        logger.info("[+] [LOGIN_SUCCESS] 2FA verified into feed after consent tap!")
+                        self._dismiss_post_login_prompts()
+                        self._capture_checkpoint("07_auth_success")
+                        report("AUTHENTICATED", "2FA verified into main feed")
+                        return True
+
+                    # Action B: Single controlled Back keyevent to dismiss overlay
+                    logger.info("[2FA_POST_LOGIN] Sending single Back keyevent to dismiss overlay...")
+                    self.adb.shell("input keyevent 4")
+                    time.sleep(1.5)
+                    if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
+                        logger.info("[+] [LOGIN_SUCCESS] 2FA verified into feed after dismissing overlay!")
+                        self._dismiss_post_login_prompts()
+                        self._capture_checkpoint("07_auth_success")
+                        report("AUTHENTICATED", "2FA verified into main feed")
+                        return True
+
+                    # Action C: Warm-launch MainActivity to bring authenticated root to foreground
+                    logger.info("[2FA_POST_LOGIN] Warm-launching MainActivity to restore authenticated feed...")
+                    self.adb.shell("am start -n com.zhiliaoapp.musically/com.ss.android.ugc.aweme.main.MainActivity")
+                    time.sleep(2.5)
+                    if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
+                        logger.info("[+] [LOGIN_SUCCESS] 2FA verified into feed after warm MainActivity launch!")
+                        self._dismiss_post_login_prompts()
+                        self._capture_checkpoint("07_auth_success")
+                        report("AUTHENTICATED", "2FA verified into main feed")
+                        return True
+
+            # 4. Check for TikTok rejection ("Incorrect code", "Code expired")
+            if any(err_kw in ui_post for err_kw in ["incorrect code", "code expired", "wrong code", "enter correct code"]):
+                logger.warning(f"[-] TikTok rejected 2FA code. UI message: {ui_post[:100]}")
+                self._capture_checkpoint("06_2fa_code_rejected")
+                break
+
+            # 5. Rate limit on 2FA
+            if any(rate_msg in ui_post for rate_msg in ["maximum number of attempts", "too many attempts", "try again later"]):
+                logger.error(f"[-] [LOGIN_RATE_LIMITED] 2FA attempt limit reached for {masked_acc}.")
+                self.last_failure_reason = "IP_RATE_LIMITED"
+                self._capture_checkpoint("06_2fa_rate_limited")
+                report("LOGIN_RATE_LIMITED", "Maximum attempts reached on 2FA")
+                return False
+
+            # 6. Only dismiss prompts if explicit post-login cues exist (never on error dialogs!)
+            if any(cue in ui_post for cue in ["save login info", "save your login info", "sync contacts", "notifications"]):
+                self._dismiss_post_login_prompts()
+
+        # Final check if authenticated
+        if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
+            self._dismiss_post_login_prompts()
+            self._capture_checkpoint("07_auth_success")
+            report("AUTHENTICATED", "2FA verified into main feed")
+            return True
+
         return False
 
     def handle_terms_and_conditions(self, width: int = 720, height: int = 1280) -> bool:
