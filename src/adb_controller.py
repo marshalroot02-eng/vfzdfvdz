@@ -807,7 +807,20 @@ class ADBController:
                 return True
         # If UI text is blank/sparse (video surface playing in software GLES AVD), verify foreground activity
         fg = self.get_foreground_activity().lower()
-        if any(act in fg for act in ["mainactivity", "feed", "aweme"]) and not any(k in fg for k in ["login", "signup", "auth", "verify"]):
+        if any(act in fg for act in ["mainactivity", ".main."]) and not any(k in fg for k in ["login", "signup", "auth", "verify", "crossplatform", "spark", "bullet", "webview"]):
+            return True
+        return False
+
+    def is_webview_or_blank_overlay(self) -> bool:
+        """Checks if a WebView container, legal overlay, or blank white screen is active without native controls."""
+        try:
+            fg = self.get_foreground_activity().lower()
+            if any(act in fg for act in ["crossplatformactivity", "sparkactivity", "bulletcontaineractivity", "webkit", "webview"]):
+                return True
+        except Exception:
+            pass
+        ui_text = self.get_ui_text_content().strip()
+        if len(ui_text) == 0 and not self.is_login_or_signup_screen() and not self.is_authenticated_user_feed():
             return True
         return False
 
