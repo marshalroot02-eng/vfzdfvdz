@@ -785,22 +785,30 @@ class TikTokBoosterOrchestrator:
         if self.adb.is_login_or_signup_screen():
             logger.info("Screen is on login/signup page. Auto-dismissing to enter Live Room...")
             self.adb.dismiss_popups()
-            # Re-trigger live room navigation intent
-            if self.config.stream_url:
-                self.adb.shell(f'am start -a android.intent.action.VIEW -d "{self.config.stream_url}" {self.adb.package_name}')
-                time.sleep(2)
 
-        if self.adb.is_live_stream_active():
-            self.transition_state(RunnerState.WATCHING, reason="TikTok Live stream player confirmed active and receiving video")
-        else:
-            logger.info("Live player not confirmed active yet; kickstarting video surface...")
+        # POST-OPENING_LIVE AUTHENTICATION VERIFICATION GATE:
+        # Guarantees that RUNNING cannot be declared merely because 2FA previously succeeded.
+        # Distinguishes 'authenticated into feed' from 'authenticated in Live room'.
+        live_authenticated = self.adb.is_live_room_authenticated()
+        if not live_authenticated and not self.adb.is_live_stream_active():
+            logger.info("Live room not confirmed active yet; kickstarting video surface...")
             self.adb.kickstart_video_surface()
             time.sleep(2)
-            if self.adb.is_live_stream_active():
-                self.transition_state(RunnerState.WATCHING, reason="TikTok Live stream player confirmed active after kickstart")
+            self.adb.dismiss_popups()
+            live_authenticated = self.adb.is_live_room_authenticated()
+
+        # Check for Live Room Login Interception (Discrepancy Gate)
+        if self.adb.is_login_or_signup_screen() or not (live_authenticated or self.adb.is_live_stream_active()):
+            if self.adb.is_login_or_signup_screen():
+                logger.error("[-] [AUTH_MISMATCH] Live room requires login prompt despite prior authentication. Session invalid in Live context.")
+                self.add_step_log("AUTH_MISMATCH", "Live room requires login prompt. Session is not authenticated in Live room.", "ERROR")
+                self.transition_state(RunnerState.LOGIN_REQUIRED, reason="Live room requires login; session not authenticated in Live room")
+                self.send_heartbeat(include_screenshot=True, reason="Live room requires login prompt")
+                return
             else:
                 self.transition_state(RunnerState.OPENING_LIVE, reason="Waiting for live player buffer to confirm active stream")
 
+        self.transition_state(RunnerState.WATCHING, reason="TikTok Live stream confirmed active and authenticated")
         self.send_heartbeat(include_screenshot=True, reason="Live room loaded, starting auto-liker loop")
 
         duration_seconds = self.config.duration_minutes * 60
@@ -813,6 +821,12 @@ class TikTokBoosterOrchestrator:
         last_heartbeat_time = 0
         last_screenshot_time = 0
         last_stream_reopen_time = time.time()
+
+        # Strict Gate: Only transition to RUNNING if NOT on login screen
+        if self.adb.is_login_or_signup_screen():
+            logger.error("[-] Cannot enter RUNNING: Screen is displaying login prompt!")
+            self.transition_state(RunnerState.LOGIN_REQUIRED, reason="Cannot run auto-liker: Screen displays login prompt")
+            return
 
         self.transition_state(RunnerState.RUNNING, reason=f"Auto-liker active at {self.config.likes_per_minute} likes/min target")
 
@@ -834,7 +848,7 @@ class TikTokBoosterOrchestrator:
 
             # Execute Heart Likes Burst (high-speed loop with zero UI-dump overhead)
             if now - last_burst_time >= interval_between_bursts:
-                if self.adb._is_tiktok_in_foreground():
+                if self.adb._is_tiktok_in_foreground() and not self.adb.is_login_or_signup_screen():
                     taps = self.adb.send_batch_likes(tap_count=taps_per_burst, delay_ms=120)
                     self.total_likes_sent += taps
                 last_burst_time = now
