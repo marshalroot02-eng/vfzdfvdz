@@ -808,24 +808,132 @@ class ADBController:
 
         return False
 
+    def is_2fa_actively_processing(self) -> bool:
+        """
+        Checks whether TikTok is actively verifying or processing a 2FA code challenge.
+        Returns True if the verification screen, 2FA digit boxes, or submission spinner
+        are active and no terminal error message is present.
+        """
+        fg = self.get_foreground_activity().lower()
+        if any(act in fg for act in ["liveplayactivity", "livedetailactivity", "livebroadcastactivity"]):
+            return False
+
+        ui_text = self.get_ui_text_content().lower()
+
+        # Terminal error messages indicate processing has finished with an error
+        terminal_errors = [
+            "incorrect code", "code expired", "wrong code", "enter correct code",
+            "maximum number of attempts", "too many attempts", "try again later",
+            "frequent requests", "account doesn't exist", "suspended"
+        ]
+        if any(err in ui_text for err in terminal_errors):
+            return False
+
+        # 2FA challenge tokens
+        two_factor_tokens = [
+            "verify email", "enter the code", "resend code", "code sent to",
+            "verification code", "need help logging in", "resend in",
+            "enter 6-digit code", "enter 4-digit code"
+        ]
+        if any(token in ui_text for token in two_factor_tokens):
+            return True
+
+        # Check if on 2FA activity with progress bar / spinner
+        if any(act in fg for act in ["signuporloginactivity", "i18nsignupactivity", "loginmethodlistactivity"]):
+            xml_str = self.dump_ui_hierarchy()
+            if "ProgressBar" in xml_str or "progress_bar" in xml_str or "loading" in ui_text:
+                return True
+            if not any(k in ui_text for k in ["for you", "following", "explore"]):
+                return True
+
+        return False
+
+    def verify_account_profile_authenticated(self, width: int = 720, height: int = 1280) -> bool:
+        """
+        Navigates to the Profile tab on MainActivity to verify whether the session is
+        an authenticated user or an unauthenticated guest. Returns to Home tab before returning.
+        """
+        try:
+            w = self.screen_width or width or 720
+            h = self.screen_height or height or 1280
+
+            # Tap Profile tab (bottom right)
+            profile_x = int(w * 0.90)
+            profile_y = int(h * 0.96)
+            self.shell(f"input tap {profile_x} {profile_y}")
+            time.sleep(1.5)
+
+            ui_text = self.get_ui_text_content().lower()
+
+            # Check if login prompt / guest indicators appear on Profile screen
+            is_guest = any(phrase in ui_text for phrase in [
+                "log in to tiktok", "sign up for tiktok", "sign up",
+                "use phone / email / username", "continue with google",
+                "continue with facebook", "log in or sign up", "tap to log in"
+            ])
+
+            is_auth = any(cue in ui_text for cue in [
+                "edit profile", "share profile", "add bio", "drafts",
+                "favorites", "following", "followers", "likes"
+            ])
+
+            # Return to Home feed tab (bottom left)
+            home_x = int(w * 0.10)
+            home_y = int(h * 0.96)
+            self.shell(f"input tap {home_x} {home_y}")
+            time.sleep(1.0)
+
+            if is_guest:
+                logger.info("[-] Profile verification confirmed: Session is GUEST.")
+                return False
+
+            if is_auth:
+                logger.info("[+] Profile verification confirmed: Session is AUTHENTICATED.")
+                return True
+
+            return False
+        except Exception as e:
+            logger.debug(f"Profile auth verification notice: {e}")
+            return False
+
     def is_authenticated_user_feed(self) -> bool:
-        """Verifies whether the TikTok app is in an authenticated user state."""
+        """
+        Verifies whether the TikTok app is in a genuine authenticated user state.
+        MainActivity + Home/Profile/For You alone is NOT considered proof of authentication,
+        because unauthenticated guest sessions also display MainActivity with these tabs.
+        """
         if self.is_login_or_signup_screen() or self.is_terms_or_policy_screen():
             return False
         fg = self.get_foreground_activity().lower()
         if any(k in fg for k in ["login", "signup", "auth", "i18nsignup", "crossplatform", "spark", "bullet"]):
             return False
         ui_text = self.get_ui_text_content().lower()
-        if any(phrase in ui_text for phrase in ["log in to tiktok", "sign up for tiktok", "use phone / email / username"]):
+        if any(phrase in ui_text for phrase in [
+            "log in to tiktok", "sign up for tiktok", "use phone / email / username",
+            "continue with google", "continue with facebook", "log in or sign up"
+        ]):
             return False
-        if ui_text:
-            has_nav = ("profile" in ui_text and "home" in ui_text) or ("for you" in ui_text) or ("following" in ui_text) or ("inbox" in ui_text)
-            if has_nav:
-                return True
-        # If UI text is blank/sparse (video surface playing in software GLES AVD), verify foreground activity
-        if any(act in fg for act in ["mainactivity", ".main."]):
-            if not self.is_screen_visually_blank_or_white(threshold=0.96):
-                return True
+
+        # Positive indicators of a genuine authenticated account session:
+        # 1. Post-login onboarding / consent prompts that only appear for logged-in accounts
+        auth_onboarding_cues = [
+            "save login info", "save your login info", "sync contacts",
+            "sync facebook friends", "allow notifications"
+        ]
+        if any(cue in ui_text for cue in auth_onboarding_cues):
+            return True
+
+        # 2. In Profile view: authenticated profile displays 'Edit profile', followers count, bio, etc.
+        profile_authenticated_cues = [
+            "edit profile", "share profile", "add bio", "drafts", "favorites"
+        ]
+        if any(cue in ui_text for cue in profile_authenticated_cues):
+            return True
+
+        # 3. If Live stream is active and authenticated
+        if self.is_live_room_authenticated():
+            return True
+
         return False
 
     def is_live_room_authenticated(self) -> bool:
@@ -919,8 +1027,8 @@ class ADBController:
         except Exception:
             pass
 
-        # If already in an active login screen with input fields, it is NOT an overlay
-        if self.is_login_or_signup_screen():
+        # If already in an active login screen or 2FA challenge, it is NOT an overlay
+        if self.is_login_or_signup_screen() or self.is_2fa_actively_processing():
             return False
 
         # If already confirmed in authenticated feed, it is NOT an overlay
@@ -1158,6 +1266,9 @@ class ADBController:
         except Exception as e:
             logger.warning(f"Could not capture screenshot: {e}")
             return False
+
+    capture_screenshot = take_screenshot
+
 
     def start_screen_record(self, output_path: str = "/sdcard/auth_session.mp4", time_limit: int = 180) -> bool:
         """Starts native Android screen recording in the background on the device."""
