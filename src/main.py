@@ -4,6 +4,7 @@ import time
 import signal
 import logging
 import uuid
+import hashlib
 import threading
 import shlex
 import requests
@@ -47,6 +48,8 @@ class TikTokBoosterOrchestrator:
 
         self.recent_logs = []
 
+        self._log_source_fingerprints()
+
         self.adb = ADBController(self.config)
         self.vpn = VPNService(self.config)
         self.auto_login = AutoLoginManager(self.config, self.adb)
@@ -58,6 +61,26 @@ class TikTokBoosterOrchestrator:
         # Continuous background heartbeat loop ensuring runner telemetry never starves during long tasks
         self.heartbeat_thread = threading.Thread(target=self._background_heartbeat_loop, daemon=True)
         self.heartbeat_thread.start()
+
+    def _log_source_fingerprints(self):
+        """Logs safe SHA256 fingerprints of core source modules without exposing credentials."""
+        try:
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            files_to_hash = {
+                "AUTO_LOGIN_SHA": os.path.join(base_dir, "src", "auto_login.py"),
+                "ADB_CONTROLLER_SHA": os.path.join(base_dir, "src", "adb_controller.py"),
+                "MAIN_PY_SHA": os.path.join(base_dir, "src", "main.py"),
+            }
+            for name, filepath in files_to_hash.items():
+                if os.path.exists(filepath):
+                    with open(filepath, "rb") as f:
+                        file_hash = hashlib.sha256(f.read()).hexdigest()
+                    logger.info(f"[SOURCE_FINGERPRINT] {name}={file_hash}")
+                    self.add_step_log("FINGERPRINT", f"{name}={file_hash[:12]}...")
+                else:
+                    logger.warning(f"[SOURCE_FINGERPRINT] {name}=NOT_FOUND at {filepath}")
+        except Exception as e:
+            logger.debug(f"Error logging source fingerprints: {e}")
 
     def add_step_log(self, step: str, message: str, level: str = "INFO"):
         """Records a timestamped runner operational step log sent to the backend/WebSocket."""
