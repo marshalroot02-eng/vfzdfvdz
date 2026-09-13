@@ -415,13 +415,17 @@ class AutoLoginManager:
         width: int = 720, 
         height: int = 1280, 
         state_callback: Optional[Callable[[str, str], None]] = None,
-        max_checks: int = 15
+        max_checks: int = 35
     ) -> bool:
         """
-        Bounded Post-2FA White Screen / Overlay Recovery State Machine.
-        Validates post-2FA submission response, dismisses Terms modals,
-        detects blank white screens / webview overlays, and safely recovers
-        to authenticated MainActivity feed with bounded attempts (max 2).
+        Bounded Post-2FA Authentication Completion & Recovery State Machine.
+        1. Waits for 2FA verification to complete; NEVER sends Back keyevents, swipes,
+           or launches MainActivity while TikTok is actively verifying.
+        2. Detects and explicitly Agrees to Terms & Conditions modals.
+        3. Verifies genuine authenticated state (never accepts unauthenticated guest
+           MainActivity as proof of success).
+        4. Captures diagnostic snapshot before executing bounded recovery for genuinely
+           hung overlays.
         """
         def report(st, msg):
             if state_callback:
@@ -429,12 +433,47 @@ class AutoLoginManager:
 
         recovery_attempts = 0
         for check_idx in range(max_checks):
-            time.sleep(2.0)
-            if check_idx in [2, 6]:
-                self.adb.kickstart_video_surface()
+            time.sleep(2.5)
+
+            # 1. Is 2FA actively verifying/processing?
+            if self.adb.is_2fa_actively_processing():
+                logger.info(f"[2FA_POST_LOGIN] Check #{check_idx + 1}/{max_checks}: TikTok is actively verifying 2FA for {masked_acc}. Waiting...")
+                # Strictly wait: no back, no swipe, no overlay recovery while 2FA spinner/screen is active
+                continue
+
             ui_post = self.adb.get_ui_text_content().lower()
 
-            # 1. Successful authentication into feed or live stream (Checked first on every tick)
+            # 2. Check for TikTok rejection ("Incorrect code", "Code expired")
+            if any(err_kw in ui_post for err_kw in ["incorrect code", "code expired", "wrong code", "enter correct code"]):
+                logger.warning(f"[-] TikTok rejected 2FA code for {masked_acc}. UI message: {ui_post[:100]}")
+                self._capture_checkpoint("06_2fa_code_rejected")
+                report("LOGIN_FAILED", "2FA code rejected by TikTok")
+                return False
+
+            # 3. Rate limit on 2FA
+            if any(rate_msg in ui_post for rate_msg in ["maximum number of attempts", "too many attempts", "try again later"]):
+                logger.error(f"[-] [LOGIN_RATE_LIMITED] 2FA attempt limit reached for {masked_acc}.")
+                self.last_failure_reason = "IP_RATE_LIMITED"
+                self._capture_checkpoint("06_2fa_rate_limited")
+                report("LOGIN_RATE_LIMITED", "Maximum attempts reached on 2FA")
+                return False
+
+            # 4. Check for and AGREE to Terms & Conditions modal if loaded post-2FA
+            if any(k in ui_post for k in ["terms of service", "privacy policy", "terms and conditions", "terms of use", "agree and continue"]):
+                logger.info("[2FA_POST_LOGIN] Terms & Conditions modal presented. Explicitly AGREEING...")
+                self.handle_terms_and_conditions(width, height)
+                time.sleep(2.0)
+                ui_post = self.adb.get_ui_text_content().lower()
+
+            # 5. Post-login onboarding / consent cues ("save login info", "sync contacts")
+            if any(cue in ui_post for cue in ["save login info", "save your login info", "sync contacts", "allow notifications"]):
+                logger.info(f"[+] [LOGIN_SUCCESS] Post-login onboarding prompt detected for {masked_acc}!")
+                self._dismiss_post_login_prompts()
+                self._capture_checkpoint("07_auth_success")
+                report("AUTHENTICATED", "2FA verified into main feed")
+                return True
+
+            # 6. Genuine authentication verification into feed or live stream
             if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
                 logger.info(f"[+] [LOGIN_SUCCESS] 2FA verified successfully for {masked_acc}!")
                 self._dismiss_post_login_prompts()
@@ -442,25 +481,27 @@ class AutoLoginManager:
                 report("AUTHENTICATED", "2FA verified into main feed")
                 return True
 
-            # 2. Check for and AGREE to Terms & Conditions modal if loaded post-2FA
-            if any(k in ui_post for k in ["terms of service", "privacy policy", "terms and conditions", "terms of use", "agree and continue"]):
-                logger.info("[2FA_POST_LOGIN] Terms & Conditions modal presented. Explicitly AGREEING...")
-                self.handle_terms_and_conditions(width, height)
-                time.sleep(1.5)
-                if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
-                    logger.info("[2FA_POST_LOGIN] Terms/consent screen dismissed into authenticated feed.")
-                    self._dismiss_post_login_prompts()
+            # 7. If on MainActivity, check Profile tab to verify authenticated vs guest
+            fg = self.adb.get_foreground_activity().lower()
+            if any(act in fg for act in ["mainactivity", ".main."]):
+                logger.info(f"[2FA_POST_LOGIN] MainActivity detected. Verifying Profile tab for {masked_acc}...")
+                if self.adb.verify_account_profile_authenticated(width, height):
+                    logger.info(f"[+] [LOGIN_SUCCESS] Profile tab confirmed authenticated session for {masked_acc}!")
                     self._capture_checkpoint("07_auth_success")
                     report("AUTHENTICATED", "2FA verified into main feed")
                     return True
-                continue
+                else:
+                    logger.warning("[-] Profile check indicates guest mode. Continuing wait...")
 
-            # 3. Bounded Post-2FA White Screen / Overlay Recovery State Machine
-            if check_idx >= 2 and recovery_attempts < 2:
+            # 8. Bounded Post-2FA White Screen / Overlay Recovery State Machine
+            # Only triggers when 2FA is NO LONGER processing, after at least 8 checks (~20s),
+            # and screen is a genuine hung overlay
+            if check_idx >= 8 and recovery_attempts < 2 and not self.adb.is_2fa_actively_processing():
                 if self.adb.is_webview_or_blank_overlay():
                     recovery_attempts += 1
                     diag = self.adb.get_recovery_diagnostics() if hasattr(self.adb, 'get_recovery_diagnostics') else {}
                     logger.info(f"[2FA_POST_LOGIN] Overlay recovery #{recovery_attempts}/2 triggered: {diag}")
+                    self.adb.take_screenshot(f"auth_recordings/recovery_diag_{recovery_attempts}.png")
 
                     # Action A: Tap bottom consent area in case an HTML webview button is present
                     w = self.adb.screen_width or width or 720
@@ -477,7 +518,7 @@ class AutoLoginManager:
                     # Action B: Single controlled Back keyevent to dismiss overlay
                     logger.info("[2FA_POST_LOGIN] Sending single Back keyevent to dismiss overlay...")
                     self.adb.shell("input keyevent 4")
-                    time.sleep(1.5)
+                    time.sleep(2.0)
                     if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
                         logger.info("[+] [LOGIN_SUCCESS] 2FA verified into feed after dismissing overlay!")
                         self._dismiss_post_login_prompts()
@@ -485,42 +526,27 @@ class AutoLoginManager:
                         report("AUTHENTICATED", "2FA verified into main feed")
                         return True
 
-                    # Action C: Warm-launch MainActivity to bring authenticated root to foreground
-                    logger.info("[2FA_POST_LOGIN] Warm-launching MainActivity to restore authenticated feed...")
+                    # Action C: Warm-launch MainActivity to bring root to foreground
+                    logger.info("[2FA_POST_LOGIN] Warm-launching MainActivity to restore feed...")
                     self.adb.shell("am start -n com.zhiliaoapp.musically/com.ss.android.ugc.aweme.main.MainActivity")
                     time.sleep(2.5)
-                    if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
+                    if self.adb.verify_account_profile_authenticated(width, height):
                         logger.info("[+] [LOGIN_SUCCESS] 2FA verified into feed after warm MainActivity launch!")
                         self._dismiss_post_login_prompts()
                         self._capture_checkpoint("07_auth_success")
                         report("AUTHENTICATED", "2FA verified into main feed")
                         return True
 
-            # 4. Check for TikTok rejection ("Incorrect code", "Code expired")
-            if any(err_kw in ui_post for err_kw in ["incorrect code", "code expired", "wrong code", "enter correct code"]):
-                logger.warning(f"[-] TikTok rejected 2FA code. UI message: {ui_post[:100]}")
-                self._capture_checkpoint("06_2fa_code_rejected")
-                break
-
-            # 5. Rate limit on 2FA
-            if any(rate_msg in ui_post for rate_msg in ["maximum number of attempts", "too many attempts", "try again later"]):
-                logger.error(f"[-] [LOGIN_RATE_LIMITED] 2FA attempt limit reached for {masked_acc}.")
-                self.last_failure_reason = "IP_RATE_LIMITED"
-                self._capture_checkpoint("06_2fa_rate_limited")
-                report("LOGIN_RATE_LIMITED", "Maximum attempts reached on 2FA")
-                return False
-
-            # 6. Only dismiss prompts if explicit post-login cues exist (never on error dialogs!)
-            if any(cue in ui_post for cue in ["save login info", "save your login info", "sync contacts", "notifications"]):
-                self._dismiss_post_login_prompts()
-
-        # Final check if authenticated
+        # Final check after bounded timeout expires
+        self.adb.take_screenshot("auth_recordings/07_2fa_timeout_diag.png")
         if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
             self._dismiss_post_login_prompts()
             self._capture_checkpoint("07_auth_success")
             report("AUTHENTICATED", "2FA verified into main feed")
             return True
 
+        logger.error(f"[-] [LOGIN_FAILED] 2FA verification timed out after {max_checks} checks.")
+        report("LOGIN_FAILED", "2FA verification timed out")
         return False
 
     def handle_terms_and_conditions(self, width: int = 720, height: int = 1280) -> bool:
