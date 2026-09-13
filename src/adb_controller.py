@@ -147,6 +147,8 @@ class ADBController:
     def get_foreground_activity(self) -> str:
         """Returns the exact current foreground package and activity name."""
         out = self.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'")
+        if not isinstance(out, str):
+            out = ""
         match = re.search(r"([a-zA-Z0-9_\.]+/[a-zA-Z0-9_\.]+)", out)
         if match:
             return match.group(1)
@@ -470,6 +472,9 @@ class ADBController:
 
         # 5. Verify that Live Stream is confirmed active with UI validation
         for attempt in range(1, 6):
+            if self.is_live_room_authenticated():
+                logger.info(f"[+] Live Stream confirmed active and authenticated on attempt {attempt}!")
+                return True
             if self.is_live_stream_active():
                 logger.info(f"[+] Live Stream confirmed active on attempt {attempt}!")
                 return True
@@ -479,7 +484,7 @@ class ADBController:
                 self.kickstart_video_surface()
             time.sleep(2)
 
-        return True
+        return self.is_live_room_authenticated() or self.is_live_stream_active()
 
     def kickstart_video_surface(self) -> None:
         """Forces TikTok video surface rendering by executing a vertical swipe gesture to clear blank/white screens."""
@@ -697,6 +702,13 @@ class ADBController:
         if self.is_terms_or_policy_screen():
             return False
 
+        fg = self.get_foreground_activity().lower()
+        if any(act in fg for act in [
+            "i18nsignupactivity", "signuponboardingactivity",
+            "signuporloginactivity", "loginmethodlistactivity"
+        ]):
+            return True
+
         ui_text = self.get_ui_text_content().lower()
         if not ui_text:
             out = self.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'").lower()
@@ -800,16 +812,68 @@ class ADBController:
         """Verifies whether the TikTok app is in an authenticated user state."""
         if self.is_login_or_signup_screen() or self.is_terms_or_policy_screen():
             return False
+        fg = self.get_foreground_activity().lower()
+        if any(k in fg for k in ["login", "signup", "auth", "i18nsignup", "crossplatform", "spark", "bullet"]):
+            return False
         ui_text = self.get_ui_text_content().lower()
+        if any(phrase in ui_text for phrase in ["log in to tiktok", "sign up for tiktok", "use phone / email / username"]):
+            return False
         if ui_text:
             has_nav = ("profile" in ui_text and "home" in ui_text) or ("for you" in ui_text) or ("following" in ui_text) or ("inbox" in ui_text)
             if has_nav:
                 return True
         # If UI text is blank/sparse (video surface playing in software GLES AVD), verify foreground activity
-        fg = self.get_foreground_activity().lower()
-        if any(act in fg for act in ["mainactivity", ".main."]) and not any(k in fg for k in ["login", "signup", "auth", "verify", "crossplatform", "spark", "bullet", "webview"]):
+        if any(act in fg for act in ["mainactivity", ".main."]):
             if not self.is_screen_visually_blank_or_white(threshold=0.96):
                 return True
+        return False
+
+    def is_live_room_authenticated(self) -> bool:
+        """
+        Post-OPENING_LIVE authentication verification based on actual UI state.
+        Distinguishes 'authenticated into feed' from 'authenticated in Live room'.
+        Guarantees that:
+        1. TikTok is in foreground.
+        2. Screen is NOT a login/signup modal (I18nSignUpActivityWithNoAnimation, etc.).
+        3. Screen is NOT a legal terms/policy or blank overlay.
+        4. Positive Live room interactive elements are present (chat input, host details, gifts/roses).
+        """
+        if not self._is_tiktok_in_foreground():
+            return False
+
+        fg = self.get_foreground_activity().lower()
+        if any(k in fg for k in ["login", "signup", "auth", "i18nsignup", "crossplatform", "spark", "bullet"]):
+            logger.warning(f"[-] Live room auth check failed: Foreground activity is login/auth overlay ({fg})")
+            return False
+
+        if self.is_login_or_signup_screen() or self.is_terms_or_policy_screen():
+            logger.warning("[-] Live room auth check failed: Login prompt or terms overlay visible on screen.")
+            return False
+
+        if self.is_screen_visually_blank_or_white(threshold=0.95):
+            logger.warning("[-] Live room auth check failed: Screen is visually blank or white.")
+            return False
+
+        ui_text = self.get_ui_text_content().lower()
+        LOGIN_INTERCEPTS = [
+            "log in to tiktok", "sign up for tiktok", "use phone / email / username",
+            "continue with google", "continue with facebook"
+        ]
+        if any(phrase in ui_text for phrase in LOGIN_INTERCEPTS):
+            logger.warning("[-] Live room auth check failed: Login prompt text detected in UI.")
+            return False
+
+        LIVE_ROOM_CUES = [
+            "send a comment", "say something", "rose", "gift", "share",
+            "tap to like", "host", "ranking"
+        ]
+        if any(cue in ui_text for cue in LIVE_ROOM_CUES):
+            return True
+
+        # Fallback to confirmed live player activity if text is rendered directly via SurfaceView
+        if any(act in fg for act in ["liveplayactivity", "livedetailactivity", "livebroadcastactivity"]):
+            return True
+
         return False
 
     def is_screen_visually_blank_or_white(self, threshold: float = 0.95) -> bool:
@@ -914,7 +978,7 @@ class ADBController:
             return True
 
         out = self.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'").lower()
-        return any(k in out for k in ["live", "mainactivity", "feed", "aweme"])
+        return any(k in out for k in ["liveplayactivity", "livedetailactivity", "livebroadcastactivity", "live_play", ".live."])
 
     def _is_tiktok_in_foreground(self) -> bool:
         """Checks if native TikTok is currently the foreground active app."""
@@ -959,15 +1023,16 @@ class ADBController:
             self.shell(f"input swipe {day_x} {wheel_top} {day_x} {wheel_bottom} 100")
             time.sleep(0.12)
 
-        # 3. Scroll Year backwards by 22-35 years from 2025 into 1990-2003 (7-10 swipes down)
-        for _ in range(random.randint(7, 10)):
+        # 3. Randomize Year (swipe down 3-6 times)
+        for _ in range(random.randint(3, 6)):
             self.shell(f"input swipe {year_x} {wheel_top} {year_x} {wheel_bottom} 100")
             time.sleep(0.12)
 
-        time.sleep(0.8)
+        time.sleep(0.6)
 
-        # Click the red Continue button
-        if not self.click_element(text="Continue"):
+        # Click the red 'Next' or 'Continue' button located at ~71.5% screen height
+        logger.info("🎂 [Onboarding] Tapping birthday confirmation button...")
+        if not self.click_element(text="Continue") and not self.click_element(text="Next"):
             self.shell(f"input tap {w // 2} {int(h * 0.715)}")
         time.sleep(1.8)
 
@@ -979,33 +1044,49 @@ class ADBController:
         return True
 
     def dismiss_popups(self) -> None:
-        """Dismisses common prompts (Full-screen tooltips, System ANRs, Notifications, Cookie consents) using UI Inspection."""
+        """
+        Dismisses common prompts (Full-screen tooltips, System ANRs, Notifications, Cookie consents) using UI Inspection.
+        Optimized to inspect the UI hierarchy in a single pass to eliminate multi-dump latency overhead.
+        """
         logger.info("Inspecting UI hierarchy to dismiss modal dialogs...")
-        
-        # 1. Dismiss Android Immersive / Full-screen tooltips ("Got it" / "OK" / "Agree and continue")
-        if self.click_element(text="Got it") or self.click_element(text="OK") or self.click_element(text="Agree and continue"):
-            time.sleep(0.5)
+        xml_str = self.dump_ui_hierarchy()
+        if not xml_str:
+            return
 
-        # 2. Dismiss System ANR Dialogs if present by exact button click
-        if self.click_element(text="Wait") or self.click_element(text="Close app"):
-            time.sleep(0.5)
+        DISMISS_TARGETS = [
+            ("text", "Got it"), ("text", "OK"), ("text", "Agree and continue"),
+            ("text", "Wait"), ("text", "Close app"),
+            ("text", "Don't allow"), ("text", "Deny"),
+            ("text", "Skip"), ("text", "Start watching"),
+            ("content-desc", "Close"), ("text", "Close")
+        ]
+        try:
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(xml_str)
+            for target_type, target_val in DISMISS_TARGETS:
+                for node in root.iter('node'):
+                    val = node.attrib.get(target_type, '')
+                    if val and val.strip().lower() == target_val.lower():
+                        bounds = node.attrib.get('bounds', '')
+                        m = re.findall(r'\[(\d+),(\d+)\]', bounds)
+                        if len(m) == 2:
+                            x = (int(m[0][0]) + int(m[1][0])) // 2
+                            y = (int(m[0][1]) + int(m[1][1])) // 2
+                            logger.info(f"[+] Dismissing popup button '{target_val}' at ({x}, {y})")
+                            self.shell(f"input tap {x} {y}")
+                            time.sleep(0.5)
+                            return
+        except Exception as e:
+            logger.debug(f"Popup dismiss parse note: {e}")
 
-        # 3. Dismiss Notification permission prompts ("Don't allow" / "Deny")
-        if self.click_element(text="Don't allow") or self.click_element(text="Deny"):
-            time.sleep(0.5)
+        # If on I18nSignUpActivityWithNoAnimation which lacks a close button,
+        # press Back once to dismiss guest intercept overlay
+        fg = self.get_foreground_activity().lower()
+        if "i18nsignupactivitywithnoanimation" in fg:
+            logger.info("[+] I18nSignUpActivityWithNoAnimation overlay detected; sending Back keyevent to dismiss...")
+            self.shell("input keyevent 4")
+            time.sleep(1.0)
 
-        # 4. Dismiss onboarding / interest picker
-        if self.click_element(text="Skip") or self.click_element(text="Start watching"):
-            time.sleep(0.5)
-
-        # 5. Dismiss 'Log in to TikTok' modal ONLY if an explicit close button is available
-        if self.is_login_or_signup_screen():
-            # Only click explicit close buttons; NEVER send Back key which closes login screen and switches apps!
-            if not self.click_element(content_desc="Close"):
-                self.click_element(text="Close")
-            time.sleep(0.5)
-
-        # 6. Dismiss/resolve 'When's your birthdate?' onboarding dialog
         self.handle_birthdate_modal()
 
     def get_safe_live_tap_coordinates(self) -> Tuple[int, int]:
