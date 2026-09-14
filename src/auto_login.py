@@ -668,7 +668,7 @@ class AutoLoginManager:
                 return False
 
             # Controlled Vision Fix: If SparkActivity remains blank white after initial transit, tap center to wake compositor
-            if "sparkactivity" in fg_lower and len(ui_post) == 0 and check_idx == 3:
+            if "sparkactivity" in fg_lower and len(ui_post) == 0 and check_idx >= 1:
                 logger.info("[2FA_CONTROL] SparkActivity is blank. Tapping center to wake WebView compositor...")
                 self.adb.shell(f"input tap {width // 2} {height // 2}")
                 time.sleep(1.2)
@@ -726,8 +726,8 @@ class AutoLoginManager:
                     logger.warning("[-] Profile check indicates unauthenticated guest mode. Continuing wait...")
 
             # Fix #1 & Fix #4: Bounded Post-2FA White Screen / Overlay Recovery State Machine
-            # Trigger early recovery at check >= 3 (~8-10s post-submission) if overlay is stuck
-            if check_idx >= 3 and recovery_attempts < 2 and not is_2fa_active:
+            # Trigger early recovery at check >= 1 if overlay is stuck
+            if check_idx >= 1 and recovery_attempts < 2 and not is_2fa_active:
                 if self.adb.is_webview_or_blank_overlay():
                     recovery_attempts += 1
                     diag = self.adb.get_recovery_diagnostics() if hasattr(self.adb, 'get_recovery_diagnostics') else {}
@@ -761,7 +761,11 @@ class AutoLoginManager:
                     # Action C: Warm-launch MainActivity to bring root to foreground
                     logger.info("[2FA_POST_LOGIN] Warm-launching MainActivity to restore feed...")
                     self.adb.shell("am start -n com.zhiliaoapp.musically/com.ss.android.ugc.aweme.main.MainActivity")
-                    time.sleep(2.5)
+                    time.sleep(2.0)
+                    fg_after = self.adb.get_foreground_activity().lower()
+                    if "universalpopupactivity" in fg_after:
+                        self.handle_terms_and_conditions(width, height)
+                        time.sleep(1.5)
                     if self.adb.verify_account_profile_authenticated(width, height):
                         logger.info("[+] [LOGIN_SUCCESS] Profile tab confirmed authenticated session after warm MainActivity launch!")
                         self._dismiss_post_login_prompts()
