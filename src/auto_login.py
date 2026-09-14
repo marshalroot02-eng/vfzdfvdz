@@ -315,13 +315,8 @@ class AutoLoginManager:
                     if code:
                         logger.info(f"Typing retrieved verification code '{code[:2]}****' into TikTok...")
                         self.adb._2fa_in_flight = True
-                        self.adb.shell(f"input text {code}")
-                        report("LOGIN_SUBMITTING", f"Submitted 2FA code {code[:2]}****")
-                        self._capture_checkpoint("06_2fa_code_submitted")
-
-                        # Validate 2FA submission response (TikTok auto-submits upon 6th digit)
                         try:
-                            if self.validate_post_2fa_transition(masked_acc, width, height, state_callback):
+                            if self._forensic_investigate_2fa(code, masked_acc, width, height, state_callback):
                                 return True
                         finally:
                             self.adb._2fa_in_flight = False
@@ -416,6 +411,196 @@ class AutoLoginManager:
         report("LOGIN_FAILED", "App not in authenticated feed")
         self._capture_checkpoint("07_auth_failed")
         return False
+
+    def _forensic_investigate_2fa(
+        self,
+        code: str,
+        masked_acc: str,
+        width: int,
+        height: int,
+        state_callback: Optional[Callable[[str, str], None]] = None
+    ) -> bool:
+        """
+        Comprehensive Forensic Investigation of the 2FA SparkActivity Hang.
+        Captures exact timestamps, UI state, IME focus, submit button status,
+        emulator network connectivity, logcat, and process lifecycle across States A, B, C, D, E.
+        CRITICAL: Never presses Enter/Back, never bypasses auth, never declares AUTHENTICATED
+        without positive profile verification.
+        """
+        import datetime
+        import xml.etree.ElementTree as ET
+        t_start = time.time()
+
+        def now_iso():
+            return datetime.datetime.utcnow().isoformat() + "Z"
+
+        def log_info(msg):
+            logger.info(f"[FORENSIC] {msg}")
+
+        def dump_ime_and_focus():
+            focus = self.adb.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'")
+            ime = self.adb.shell("dumpsys input_method | grep -E 'mServedView|mInputShown|mCurFocusedWindow|mImeWindowVis'")
+            return focus.strip(), ime.strip()
+
+        def check_submit_button_info(xml_str):
+            if not xml_str:
+                return False, False, "No XML"
+            try:
+                root = ET.fromstring(xml_str)
+                submit_keywords = ["submit", "continue", "verify", "done", "next", "confirm", "log in", "login"]
+                for node in root.iter("node"):
+                    txt = node.attrib.get("text", "").lower()
+                    desc = node.attrib.get("content-desc", "").lower()
+                    cls = node.attrib.get("class", "")
+                    if any(k in txt or k in desc for k in submit_keywords):
+                        enabled = node.attrib.get("enabled", "false").lower() == "true"
+                        return True, enabled, f"class={cls}, text='{txt}', desc='{desc}', enabled={enabled}"
+            except Exception as e:
+                return False, False, f"Parse error: {e}"
+            return False, False, "Not found"
+
+        def test_emulator_network():
+            dns_ip = self.adb.shell("getprop net.dns1")
+            ping_ip = self.adb.shell("ping -c 1 -W 2 8.8.8.8 2>&1 | grep -E 'transmitted|received|loss'")
+            ping_dns = self.adb.shell("ping -c 1 -W 2 google.com 2>&1 | grep -E 'transmitted|received|loss'")
+            curl_tt = self.adb.shell("curl -I -s --connect-timeout 4 https://api.tiktokv.com/ 2>&1 | head -n 3 || echo 'CURL_FAIL'")
+            return {
+                "dns_server": dns_ip.strip(),
+                "ping_8.8.8.8": ping_ip.strip(),
+                "ping_google_com": ping_dns.strip(),
+                "curl_api_tiktokv": curl_tt.strip()
+            }
+
+        def record_state(state_name: str, screenshot_filename: str):
+            ts = now_iso()
+            elapsed = time.time() - t_start
+            fg = self.adb.get_foreground_activity()
+            xml = self.adb.dump_ui_hierarchy()
+            ui_text = self.adb.get_ui_text_content().lower()[:120].replace("\\n", " ").strip()
+            focus, ime = dump_ime_and_focus()
+            ps = self.adb.shell("ps -A | grep -E 'musically' | awk '{print $2, $8, $9}'")
+            net = test_emulator_network()
+            btn_exists, btn_enabled, btn_desc = check_submit_button_info(xml)
+
+            # Save state screenshot
+            self.adb.take_screenshot(f"auth_recordings/{screenshot_filename}")
+
+            # Logcat slice
+            logcat_slice = self.adb.shell("logcat -d -t 60 -v time | grep -E -i 'musically|Spark|Lynx|WebView|chromium|InputMethod|Cronet|ttnet|passport|auth'")
+
+            log_info(f"=== {state_name} (elapsed={elapsed:.2f}s, timestamp={ts}) ===")
+            log_info(f"  Activity: {fg}")
+            log_info(f"  UI text summary: '{ui_text}' (XML len={len(xml)})")
+            log_info(f"  Focused Element: {focus}")
+            log_info(f"  IME / Keyboard State: {ime}")
+            log_info(f"  Submit Button: exists={btn_exists}, enabled={btn_enabled} ({btn_desc})")
+            log_info(f"  Process State: {ps}")
+            log_info(f"  Emulator Network: {net}")
+            if logcat_slice:
+                lines = [l.strip() for l in logcat_slice.splitlines() if l.strip()][-8:]
+                log_info(f"  Recent Logcat ({len(lines)} lines):")
+                for l in lines:
+                    log_info(f"    {l[:140]}")
+            return {
+                "state": state_name,
+                "timestamp": ts,
+                "elapsed": elapsed,
+                "activity": fg,
+                "ui_text": ui_text,
+                "focus": focus,
+                "ime": ime,
+                "submit_button": (btn_exists, btn_enabled, btn_desc),
+                "network": net
+            }
+
+        log_info("=" * 60)
+        log_info("STARTING FORENSIC INVESTIGATION OF SPARKACTIVITY 2FA HANG")
+        log_info("=" * 60)
+
+        # Baseline: 2FA screen detected
+        t0_appear = now_iso()
+        log_info(f"1. 2FA Screen Active at {t0_appear}")
+        fg_init = self.adb.get_foreground_activity()
+        focus_init, ime_init = dump_ime_and_focus()
+        net_init = test_emulator_network()
+        log_info(f"  Initial Activity: {fg_init}")
+        log_info(f"  Initial Focus: {focus_init}")
+        log_info(f"  Initial IME: {ime_init}")
+        log_info(f"  Initial Network: {net_init}")
+
+        # Clear logcat for clean forensic trace
+        self.adb.shell("logcat -c")
+
+        # Input Commit Investigation:
+        # Step 1: Type 1st digit
+        t1_digit = now_iso()
+        log_info(f"2. Entering first digit '{code[0]}' at {t1_digit}")
+        self.adb.shell(f"input text {code[0]}")
+        time.sleep(0.3)
+        focus_after_d1, ime_after_d1 = dump_ime_and_focus()
+        log_info(f"  Focus after digit 1: {focus_after_d1}")
+
+        # Step 2: Type digits 2 through 5 (creating State A: 5 digits typed, before 6th digit)
+        log_info(f"3. Entering digits 2 through 5: '{code[1:5]}'")
+        self.adb.shell(f"input text {code[1:5]}")
+        time.sleep(0.5)
+
+        # STATE A: BEFORE typing 6th digit
+        record_state("STATE_A_BEFORE_6TH_DIGIT", "state_A_before_6th_digit.png")
+
+        # Step 3: Type 6th digit (creating State B: immediately after 6th digit)
+        t6_digit = now_iso()
+        log_info(f"4. Entering sixth digit '{code[5]}' at {t6_digit}")
+        self.adb.shell(f"input text {code[5]}")
+        if state_callback:
+            state_callback("LOGIN_SUBMITTING", f"Submitted 2FA code {code[:2]}****")
+        self._capture_checkpoint("06_2fa_code_submitted")
+
+        # STATE B: Immediately AFTER typing 6th digit
+        record_state("STATE_B_AFTER_6TH_DIGIT", "state_B_immediately_after_6th_digit.png")
+
+        # STATE C: 2 seconds later
+        time.sleep(2.0)
+        record_state("STATE_C_2S_LATER", "state_C_2s_after_6th_digit.png")
+
+        # STATE D: 10 seconds later
+        time.sleep(8.0)
+        record_state("STATE_D_10S_LATER", "state_D_10s_after_6th_digit.png")
+
+        # STATE E: 60 seconds later
+        time.sleep(50.0)
+        record_state("STATE_E_60S_LATER", "state_E_60s_after_6th_digit.png")
+
+        # Full Logcat Dump & Extraction
+        log_info("5. Dumping and filtering comprehensive 2FA logcat...")
+        full_logcat = self.adb.shell("logcat -d -v time | grep -E -i 'Spark|Lynx|WebView|chromium|Aweme|bytedance|ttnet|Cronet|passport|account|login|auth|ticket|token|net|ssl|http|timeout|connect'")
+
+        # Sanitize logcat (mask any credentials)
+        sanitized_logcat = full_logcat.replace(code, "******")
+        if masked_acc and "@" in masked_acc:
+            raw_acc = masked_acc.split("***@")[0]
+            if raw_acc:
+                sanitized_logcat = sanitized_logcat.replace(raw_acc, "***")
+
+        try:
+            os.makedirs("auth_recordings", exist_ok=True)
+            with open("auth_recordings/forensic_logcat_2fa.txt", "w", encoding="utf-8") as f:
+                f.write(sanitized_logcat)
+            log_info(f"Saved filtered logcat to auth_recordings/forensic_logcat_2fa.txt ({len(sanitized_logcat)} chars)")
+        except Exception as e:
+            logger.debug(f"Logcat save note: {e}")
+
+        log_info("=== KEY LOGCAT EVIDENCE (Last 25 lines) ===")
+        for line in [l.strip() for l in sanitized_logcat.splitlines() if l.strip()][-25:]:
+            log_info(f"  {line[:150]}")
+
+        log_info("=" * 60)
+        log_info("FORENSIC OBSERVATION PHASE COMPLETE. ENTERING BOUNDED TRANSITION VALIDATION.")
+        log_info("=" * 60)
+
+        # Enter bounded transition validation (max_checks=12, ~30s bounded wait)
+        # Guarantees: ZERO Back keys, ZERO warm launches, ZERO fake auth
+        return self.validate_post_2fa_transition(masked_acc, width, height, state_callback, max_checks=12)
 
     def validate_post_2fa_transition(
         self, 
