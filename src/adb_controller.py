@@ -442,11 +442,17 @@ class ADBController:
             live_target = f"https://www.tiktok.com/@{username}/live"
             resp = requests.get(live_target, headers=headers, timeout=8)
             if resp.status_code == 200 and resp.text:
-                m_status = re.search(r'"status":(\d+)', resp.text)
+                m_status = re.search(r'"status":\s*(\d+)', resp.text)
+                m_room = re.search(r'"roomId":"(\d+)"', resp.text)
+                # Specific check for ended status (status: 4)
                 if m_status and m_status.group(1) == "4":
                     return False, f"Target creator @{username} stream has ENDED (status: 4)"
-                if "is not currently live" in resp.text or "LIVE has ended" in resp.text or "this live has ended" in resp.text.lower():
-                    return False, f"Target creator @{username} is not currently live"
+                # Specific check for active status (status: 2)
+                if m_status and m_status.group(1) == "2":
+                    return True, f"Creator @{username} live active (status: 2)"
+                # If room ID is missing and no status 2, creator is not live
+                if not m_room and not m_status:
+                    return False, f"Target creator @{username} is not currently live (no active room)"
             return True, f"Creator @{username} live active"
         except Exception as e:
             logger.debug(f"Online status check note: {e}")
