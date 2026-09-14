@@ -425,6 +425,33 @@ class ADBController:
 
         return resolved_url, room_id, username
 
+    def check_stream_online_status(self, stream_url: str) -> Tuple[bool, str]:
+        """
+        Checks whether the target creator's live stream is currently active or offline/ended.
+        Returns (is_live: bool, status_message: str).
+        """
+        try:
+            resolved_url, room_id, username = self.resolve_canonical_stream_info(stream_url)
+            if not username:
+                return True, "Stream URL valid"
+            import requests
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            }
+            live_target = f"https://www.tiktok.com/@{username}/live"
+            resp = requests.get(live_target, headers=headers, timeout=8)
+            if resp.status_code == 200 and resp.text:
+                m_status = re.search(r'"status":(\d+)', resp.text)
+                if m_status and m_status.group(1) == "4":
+                    return False, f"Target creator @{username} stream has ENDED (status: 4)"
+                if "is not currently live" in resp.text or "LIVE has ended" in resp.text or "this live has ended" in resp.text.lower():
+                    return False, f"Target creator @{username} is not currently live"
+            return True, f"Creator @{username} live active"
+        except Exception as e:
+            logger.debug(f"Online status check note: {e}")
+            return True, "Check skipped"
+
     def open_live_stream(self, stream_url: str) -> bool:
         """Alias for launch_live_stream to support dynamic target switching."""
         return self.launch_live_stream(stream_url)
@@ -709,6 +736,12 @@ class ADBController:
             return False
 
         fg = self.get_foreground_activity().lower()
+        # Overlay/hybrid webview containers are NOT login screens
+        if any(act in fg for act in [
+            "sparkactivity", "crossplatformactivity", "bulletcontaineractivity", "universalpopupactivity"
+        ]):
+            return False
+
         if any(act in fg for act in [
             "i18nsignupactivity", "signuponboardingactivity",
             "signuporloginactivity", "loginmethodlistactivity"
@@ -717,8 +750,8 @@ class ADBController:
 
         ui_text = self.get_ui_text_content().lower()
         if not ui_text:
-            out = self.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'").lower()
-            return "login" in out or "signup" in out or "authorize" in out
+            out = self.shell("dumpsys window | grep -E 'mCurrentFocus'").lower()
+            return any(k in out for k in ["login", "signup", "authorize"]) and not any(k in out for k in ["spark", "crossplatform", "universalpopup"])
         
         login_phrases = [
             "log in to tiktok",
@@ -785,10 +818,10 @@ class ADBController:
             "tiktok privacy policy",
         ])
 
-        # Check for known legal activity (e.g. CrossPlatformActivity)
+        # Check for known legal activity (e.g. CrossPlatformActivity, UniversalPopupActivity)
         try:
             fg = self.get_foreground_activity().lower()
-            is_legal_activity = "crossplatformactivity" in fg or "webkit" in fg
+            is_legal_activity = "crossplatformactivity" in fg or "webkit" in fg or "universalpopupactivity" in fg
         except Exception:
             is_legal_activity = False
 
@@ -849,8 +882,6 @@ class ADBController:
         xml_str = self.dump_ui_hierarchy()
         if any(act in fg for act in ["signuporloginactivity", "i18nsignupactivity", "loginmethodlistactivity"]):
             if "ProgressBar" in xml_str or "progress_bar" in xml_str or "loading" in ui_text:
-                return True
-            if not any(k in ui_text for k in ["for you", "following", "explore"]):
                 return True
 
         # Check if 2FA was submitted / in flight on controller
@@ -1063,7 +1094,8 @@ class ADBController:
             fg = self.get_foreground_activity().lower()
             known_containers = [
                 "crossplatformactivity", "bulletcontaineractivity",
-                "webkit", "webview", "terms", "agreement", "i18nsignupactivitywithnoanimation"
+                "webkit", "webview", "terms", "agreement", "i18nsignupactivitywithnoanimation",
+                "universalpopupactivity"
             ]
             if any(act in fg for act in known_containers):
                 return True
