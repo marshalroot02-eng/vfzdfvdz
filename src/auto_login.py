@@ -641,6 +641,7 @@ class AutoLoginManager:
             # Invariant: If 2FA is actively processing, NEVER trigger recovery, Back key, or warm launch
             if is_2fa_active:
                 logger.info(f"[2FA_WAIT] active_2fa=true overlay=false action=WAIT (TikTok is actively processing 2FA for {masked_acc})")
+                report("LOGIN_SUBMITTING", f"Verifying 2FA ({check_idx + 1}/{max_checks})...")
                 continue
 
             # Fix #6: Check for genuine terminal TikTok rejection ("Incorrect code", "Code expired")
@@ -719,13 +720,13 @@ class AutoLoginManager:
                     logger.warning("[-] Profile check indicates unauthenticated guest mode. Continuing wait...")
 
             # Fix #1 & Fix #4: Bounded Post-2FA White Screen / Overlay Recovery State Machine
-            # Strictly ONLY triggers when 2FA is NOT processing, after at least 8 checks (~20s),
-            # and screen is a genuine hung overlay
-            if check_idx >= 8 and recovery_attempts < 2 and not is_2fa_active:
+            # Trigger early recovery at check >= 3 (~8-10s post-submission) if overlay is stuck
+            if check_idx >= 3 and recovery_attempts < 2 and not is_2fa_active:
                 if self.adb.is_webview_or_blank_overlay():
                     recovery_attempts += 1
                     diag = self.adb.get_recovery_diagnostics() if hasattr(self.adb, 'get_recovery_diagnostics') else {}
                     logger.info(f"[2FA_POST_LOGIN] Overlay recovery #{recovery_attempts}/2 triggered: {diag}")
+                    report("LOGIN_SUBMITTING", f"Overlay recovery #{recovery_attempts} (waking feed)...")
                     self.adb.take_screenshot(f"auth_recordings/recovery_diag_{recovery_attempts}.png")
 
                     # Action A: Tap bottom consent area in case an HTML webview button is present
@@ -788,7 +789,8 @@ class AutoLoginManager:
         with a white loading screen.
         """
         ui_text = self.adb.get_ui_text_content().lower()
-        terms_detected = any(k in ui_text for k in [
+        fg_act = self.adb.get_foreground_activity().lower()
+        terms_detected = "universalpopupactivity" in fg_act or any(k in ui_text for k in [
             "terms of service", "privacy policy", "terms and conditions", 
             "terms of use", "by continuing, you agree", "agree to tiktok", 
             "agree and continue"
