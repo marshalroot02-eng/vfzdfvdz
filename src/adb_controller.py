@@ -811,8 +811,8 @@ class ADBController:
     def is_2fa_actively_processing(self) -> bool:
         """
         Checks whether TikTok is actively verifying or processing a 2FA code challenge.
-        Returns True if the verification screen, 2FA digit boxes, or submission spinner
-        are active and no terminal error message is present.
+        Returns True if the verification screen, 2FA digit boxes, hybrid SparkActivity,
+        or submission spinner are active and no terminal error message is present.
         """
         fg = self.get_foreground_activity().lower()
         if any(act in fg for act in ["liveplayactivity", "livedetailactivity", "livebroadcastactivity"]):
@@ -824,26 +824,34 @@ class ADBController:
         terminal_errors = [
             "incorrect code", "code expired", "wrong code", "enter correct code",
             "maximum number of attempts", "too many attempts", "try again later",
-            "frequent requests", "account doesn't exist", "suspended"
+            "frequent requests", "account doesn't exist", "suspended",
+            "verification rejected", "request failed"
         ]
         if any(err in ui_text for err in terminal_errors):
             return False
 
-        # 2FA challenge tokens
+        # 2FA challenge tokens in UI hierarchy
         two_factor_tokens = [
             "verify email", "enter the code", "resend code", "code sent to",
             "verification code", "need help logging in", "resend in",
-            "enter 6-digit code", "enter 4-digit code"
+            "enter 6-digit code", "enter 4-digit code", "2-step verification"
         ]
         if any(token in ui_text for token in two_factor_tokens):
             return True
 
         # Check if on 2FA activity with progress bar / spinner
+        xml_str = self.dump_ui_hierarchy()
         if any(act in fg for act in ["signuporloginactivity", "i18nsignupactivity", "loginmethodlistactivity"]):
-            xml_str = self.dump_ui_hierarchy()
             if "ProgressBar" in xml_str or "progress_bar" in xml_str or "loading" in ui_text:
                 return True
             if not any(k in ui_text for k in ["for you", "following", "explore"]):
+                return True
+
+        # Check if 2FA was submitted / in flight on controller
+        if getattr(self, "_2fa_in_flight", False):
+            # In-flight 2FA on SparkActivity, CrossPlatformActivity, or auth containers
+            if any(act in fg for act in ["sparkactivity", "crossplatformactivity", "bulletcontaineractivity",
+                                        "signuporloginactivity", "i18nsignupactivity", "loginmethodlistactivity"]):
                 return True
 
         return False
@@ -852,6 +860,8 @@ class ADBController:
         """
         Navigates to the Profile tab on MainActivity to verify whether the session is
         an authenticated user or an unauthenticated guest. Returns to Home tab before returning.
+        Strictly requires positive authenticated account evidence (e.g. 'Edit profile', followers statistics)
+        and rejects guest indicators or generic feed tokens.
         """
         try:
             w = self.screen_width or width or 720
@@ -863,19 +873,31 @@ class ADBController:
             self.shell(f"input tap {profile_x} {profile_y}")
             time.sleep(1.5)
 
+            fg = self.get_foreground_activity().lower()
+            if any(act in fg for act in ["i18nsignup", "signuporlogin", "loginmethodlist", "auth"]):
+                logger.info("[-] Profile verification: Opening Profile launched login modal (Session is GUEST).")
+                self.shell("input keyevent 4")  # Dismiss login modal
+                time.sleep(1.0)
+                return False
+
             ui_text = self.get_ui_text_content().lower()
 
             # Check if login prompt / guest indicators appear on Profile screen
-            is_guest = any(phrase in ui_text for phrase in [
+            guest_indicators = [
                 "log in to tiktok", "sign up for tiktok", "sign up",
                 "use phone / email / username", "continue with google",
-                "continue with facebook", "log in or sign up", "tap to log in"
-            ])
+                "continue with facebook", "log in or sign up", "tap to log in",
+                "log in", "already have an account"
+            ]
+            is_guest = any(phrase in ui_text for phrase in guest_indicators)
 
-            is_auth = any(cue in ui_text for cue in [
+            # Positive indicators that ONLY exist on an authenticated account profile
+            positive_auth_indicators = [
                 "edit profile", "share profile", "add bio", "drafts",
-                "favorites", "following", "followers", "likes"
-            ])
+                "favorites", "following", "followers", "likes",
+                "set up profile", "find friends", "orders", "settings and privacy"
+            ]
+            is_auth = any(cue in ui_text for cue in positive_auth_indicators)
 
             # Return to Home feed tab (bottom left)
             home_x = int(w * 0.10)
@@ -888,9 +910,10 @@ class ADBController:
                 return False
 
             if is_auth:
-                logger.info("[+] Profile verification confirmed: Session is AUTHENTICATED.")
+                logger.info("[+] Profile verification confirmed: Positive account indicators present (Session is AUTHENTICATED).")
                 return True
 
+            logger.warning("[-] Profile check failed: No positive authenticated account indicators found. Session is GUEST.")
             return False
         except Exception as e:
             logger.debug(f"Profile auth verification notice: {e}")
@@ -930,10 +953,6 @@ class ADBController:
         if any(cue in ui_text for cue in profile_authenticated_cues):
             return True
 
-        # 3. If Live stream is active and authenticated
-        if self.is_live_room_authenticated():
-            return True
-
         return False
 
     def is_live_room_authenticated(self) -> bool:
@@ -971,8 +990,9 @@ class ADBController:
             logger.warning("[-] Live room auth check failed: Login prompt text detected in UI.")
             return False
 
+        # Specific Live room cues (NOT generic feed tokens like 'share' or 'follow')
         LIVE_ROOM_CUES = [
-            "send a comment", "say something", "rose", "gift", "share",
+            "send a comment", "say something", "rose", "gift",
             "tap to like", "host", "ranking"
         ]
         if any(cue in ui_text for cue in LIVE_ROOM_CUES):
@@ -1016,24 +1036,32 @@ class ADBController:
         Multi-signal detection for WebView containers, legal overlays, or blank white screens.
         Combines foreground Activity inspection, visual blankness testing, and UIAutomator token analysis.
         """
-        try:
-            fg = self.get_foreground_activity().lower()
-            known_containers = [
-                "crossplatformactivity", "sparkactivity", "bulletcontaineractivity",
-                "webkit", "webview", "terms", "agreement", "i18nsignupactivitywithnoanimation"
-            ]
-            if any(act in fg for act in known_containers):
-                return True
-        except Exception:
-            pass
+        # CRITICAL INVARIANT (Fix #1): Active 2FA ALWAYS wins over overlay detection.
+        # NEVER classify as an overlay while 2FA is in flight / actively processing!
+        if self.is_2fa_actively_processing():
+            return False
 
-        # If already in an active login screen or 2FA challenge, it is NOT an overlay
-        if self.is_login_or_signup_screen() or self.is_2fa_actively_processing():
+        # If already in an active login screen, it is NOT an overlay
+        if self.is_login_or_signup_screen():
             return False
 
         # If already confirmed in authenticated feed, it is NOT an overlay
         if self.is_authenticated_user_feed():
             return False
+
+        try:
+            fg = self.get_foreground_activity().lower()
+            known_containers = [
+                "crossplatformactivity", "bulletcontaineractivity",
+                "webkit", "webview", "terms", "agreement", "i18nsignupactivitywithnoanimation"
+            ]
+            if any(act in fg for act in known_containers):
+                return True
+            # SparkActivity is only an overlay if not in active 2FA (guaranteed by is_2fa_actively_processing check above)
+            if "sparkactivity" in fg:
+                return True
+        except Exception:
+            pass
 
         # Visual blank/white screen test (catches stalled WebViews even if residual accessibility nodes exist)
         if self.is_screen_visually_blank_or_white(threshold=0.95):
@@ -1065,8 +1093,9 @@ class ADBController:
 
     def is_live_stream_active(self) -> bool:
         """
-        Verifies whether the device is actively inside the TikTok live room.
-        Guarantees that login/signup screen is NOT visible and live elements or video activity are present.
+        Checks whether the device is currently displaying an active TikTok Live stream.
+        Strictly requires positive Live room interaction elements or confirmed Live player activity.
+        Generic guest-feed tokens like 'Share', 'Follow', 'Home', 'Profile' are NEVER treated as proof.
         """
         if not self._is_tiktok_in_foreground():
             return False
@@ -1075,14 +1104,21 @@ class ADBController:
             logger.warning("[-] Live check failed: Login/Signup modal is active on screen.")
             return False
 
+        fg = self.get_foreground_activity().lower()
+
+        # If foreground is confirmed Live player activity
+        if any(k in fg for k in ["liveplayactivity", "livedetailactivity", "livebroadcastactivity", "live_play", ".live."]):
+            return True
+
         ui_text = self.get_ui_text_content().lower()
         if any(k in ui_text for k in ["when's your birthdate", "enter your birthdate", "your birthdate won't be shown"]):
             logger.warning("[-] Live check failed: 'When's your birthdate?' modal is blocking screen. Auto-resolving...")
             self.handle_birthdate_modal()
             return False
 
-        live_indicators = ["follow", "rose", "share", "send a comment", "gift", "tap to like", "host", "ranking", "live"]
-        if any(ind in ui_text for ind in ["follow", "rose", "share", "gift", "send a comment"]):
+        # Specific Live room cues (NOT generic feed tokens like 'share' or 'follow')
+        live_room_cues = ["send a comment", "say something", "rose", "gift", "tap to like", "host", "ranking"]
+        if any(cue in ui_text for cue in live_room_cues):
             return True
 
         out = self.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'").lower()
