@@ -314,13 +314,17 @@ class AutoLoginManager:
                     code = email_srv.fetch_tiktok_verification_code(timeout_seconds=60, check_interval=3, min_timestamp=auth_request_time)
                     if code:
                         logger.info(f"Typing retrieved verification code '{code[:2]}****' into TikTok...")
+                        self.adb._2fa_in_flight = True
                         self.adb.shell(f"input text {code}")
                         report("LOGIN_SUBMITTING", f"Submitted 2FA code {code[:2]}****")
                         self._capture_checkpoint("06_2fa_code_submitted")
 
                         # Validate 2FA submission response (TikTok auto-submits upon 6th digit)
-                        if self.validate_post_2fa_transition(masked_acc, width, height, state_callback):
-                            return True
+                        try:
+                            if self.validate_post_2fa_transition(masked_acc, width, height, state_callback):
+                                return True
+                        finally:
+                            self.adb._2fa_in_flight = False
                         
                         # If resend is needed, check UI for resend
                         ui_post = self.adb.get_ui_text_content().lower()
@@ -335,12 +339,16 @@ class AutoLoginManager:
                                     logger.info(f"Submitting newly resent 2FA code '{new_code[:2]}****'...")
                                     for _ in range(6):
                                         self.adb.shell("input keyevent 67")  # Backspace
+                                    self.adb._2fa_in_flight = True
                                     self.adb.shell(f"input text {new_code}")
                                     self._capture_checkpoint("06_2fa_resent_submitted")
                                     report("LOGIN_SUBMITTING", f"Submitted resent 2FA code {new_code[:2]}****")
                                     time.sleep(2)
-                                    if self.validate_post_2fa_transition(masked_acc, width, height, state_callback):
-                                        return True
+                                    try:
+                                        if self.validate_post_2fa_transition(masked_acc, width, height, state_callback):
+                                            return True
+                                    finally:
+                                        self.adb._2fa_in_flight = False
                     else:
                         logger.warning("[-] Gmail 2FA code retrieval timed out.")
                         report("LOGIN_FAILED", "2FA code timeout from Gmail IMAP")
@@ -435,37 +443,53 @@ class AutoLoginManager:
         for check_idx in range(max_checks):
             time.sleep(2.5)
 
-            # 1. Is 2FA actively verifying/processing?
-            if self.adb.is_2fa_actively_processing():
-                logger.info(f"[2FA_POST_LOGIN] Check #{check_idx + 1}/{max_checks}: TikTok is actively verifying 2FA for {masked_acc}. Waiting...")
-                # Strictly wait: no back, no swipe, no overlay recovery while 2FA spinner/screen is active
+            fg = self.adb.get_foreground_activity()
+            fg_lower = fg.lower()
+            ui_post = self.adb.get_ui_text_content().lower()
+            ui_summary = ui_post[:80].replace('\n', ' ').strip()
+            is_2fa_active = self.adb.is_2fa_actively_processing()
+            is_overlay = self.adb.is_webview_or_blank_overlay() if not is_2fa_active else False
+            is_authenticated = self.adb.is_authenticated_user_feed()
+
+            # Fix #5: White Screen Diagnostics
+            # Distinguishes: A. Active 2FA, B. Genuine stuck overlay, C. Authentication failure, D. Completed auth
+            logger.info(
+                f"[2FA_WAIT] check=#{check_idx + 1}/{max_checks} activity={fg} "
+                f"active_2fa={is_2fa_active} overlay={is_overlay} "
+                f"auth_detected={is_authenticated} ui='{ui_summary}'"
+            )
+
+            # Fix #1 & Fix #4: Never interrupt active 2FA
+            # Invariant: If 2FA is actively processing, NEVER trigger recovery, Back key, or warm launch
+            if is_2fa_active:
+                logger.info(f"[2FA_WAIT] active_2fa=true overlay=false action=WAIT (TikTok is actively processing 2FA for {masked_acc})")
                 continue
 
-            ui_post = self.adb.get_ui_text_content().lower()
-
-            # 2. Check for TikTok rejection ("Incorrect code", "Code expired")
-            if any(err_kw in ui_post for err_kw in ["incorrect code", "code expired", "wrong code", "enter correct code"]):
+            # Fix #6: Check for genuine terminal TikTok rejection ("Incorrect code", "Code expired")
+            terminal_rejections = ["incorrect code", "code expired", "wrong code", "enter correct code", "verification rejected"]
+            if any(err_kw in ui_post for err_kw in terminal_rejections):
                 logger.warning(f"[-] TikTok rejected 2FA code for {masked_acc}. UI message: {ui_post[:100]}")
                 self._capture_checkpoint("06_2fa_code_rejected")
                 report("LOGIN_FAILED", "2FA code rejected by TikTok")
                 return False
 
-            # 3. Rate limit on 2FA
-            if any(rate_msg in ui_post for rate_msg in ["maximum number of attempts", "too many attempts", "try again later"]):
+            # Fix #6: Terminal rate limit on 2FA
+            terminal_rate_limits = ["maximum number of attempts", "too many attempts", "try again later", "frequent requests"]
+            if any(rate_msg in ui_post for rate_msg in terminal_rate_limits):
                 logger.error(f"[-] [LOGIN_RATE_LIMITED] 2FA attempt limit reached for {masked_acc}.")
                 self.last_failure_reason = "IP_RATE_LIMITED"
                 self._capture_checkpoint("06_2fa_rate_limited")
                 report("LOGIN_RATE_LIMITED", "Maximum attempts reached on 2FA")
                 return False
 
-            # 4. Check for and AGREE to Terms & Conditions modal if loaded post-2FA
+            # Check for and AGREE to Terms & Conditions modal if loaded post-2FA
             if any(k in ui_post for k in ["terms of service", "privacy policy", "terms and conditions", "terms of use", "agree and continue"]):
                 logger.info("[2FA_POST_LOGIN] Terms & Conditions modal presented. Explicitly AGREEING...")
                 self.handle_terms_and_conditions(width, height)
                 time.sleep(2.0)
                 ui_post = self.adb.get_ui_text_content().lower()
 
-            # 5. Post-login onboarding / consent cues ("save login info", "sync contacts")
+            # Post-login onboarding / consent cues ("save login info", "sync contacts")
             if any(cue in ui_post for cue in ["save login info", "save your login info", "sync contacts", "allow notifications"]):
                 logger.info(f"[+] [LOGIN_SUCCESS] Post-login onboarding prompt detected for {masked_acc}!")
                 self._dismiss_post_login_prompts()
@@ -473,30 +497,30 @@ class AutoLoginManager:
                 report("AUTHENTICATED", "2FA verified into main feed")
                 return True
 
-            # 6. Genuine authentication verification into feed or live stream
-            if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
-                logger.info(f"[+] [LOGIN_SUCCESS] 2FA verified successfully for {masked_acc}!")
+            # Fix #2 & Fix #3: Genuine authentication verification into feed
+            # NOTE: NEVER accept is_live_stream_active() as proof of account authentication!
+            if self.adb.is_authenticated_user_feed():
+                logger.info(f"[+] [LOGIN_SUCCESS] Positive authenticated feed confirmed for {masked_acc}!")
                 self._dismiss_post_login_prompts()
                 self._capture_checkpoint("07_auth_success")
                 report("AUTHENTICATED", "2FA verified into main feed")
                 return True
 
-            # 7. If on MainActivity, check Profile tab to verify authenticated vs guest
-            fg = self.adb.get_foreground_activity().lower()
-            if any(act in fg for act in ["mainactivity", ".main."]):
-                logger.info(f"[2FA_POST_LOGIN] MainActivity detected. Verifying Profile tab for {masked_acc}...")
+            # Fix #3: If on MainActivity, verify Profile tab for positive authenticated evidence
+            if any(act in fg_lower for act in ["mainactivity", ".main."]):
+                logger.info(f"[2FA_POST_LOGIN] MainActivity detected. Verifying Profile tab for positive authentication ({masked_acc})...")
                 if self.adb.verify_account_profile_authenticated(width, height):
-                    logger.info(f"[+] [LOGIN_SUCCESS] Profile tab confirmed authenticated session for {masked_acc}!")
+                    logger.info(f"[+] [LOGIN_SUCCESS] Profile tab confirmed positive authenticated session for {masked_acc}!")
                     self._capture_checkpoint("07_auth_success")
                     report("AUTHENTICATED", "2FA verified into main feed")
                     return True
                 else:
-                    logger.warning("[-] Profile check indicates guest mode. Continuing wait...")
+                    logger.warning("[-] Profile check indicates unauthenticated guest mode. Continuing wait...")
 
-            # 8. Bounded Post-2FA White Screen / Overlay Recovery State Machine
-            # Only triggers when 2FA is NO LONGER processing, after at least 8 checks (~20s),
+            # Fix #1 & Fix #4: Bounded Post-2FA White Screen / Overlay Recovery State Machine
+            # Strictly ONLY triggers when 2FA is NOT processing, after at least 8 checks (~20s),
             # and screen is a genuine hung overlay
-            if check_idx >= 8 and recovery_attempts < 2 and not self.adb.is_2fa_actively_processing():
+            if check_idx >= 8 and recovery_attempts < 2 and not is_2fa_active:
                 if self.adb.is_webview_or_blank_overlay():
                     recovery_attempts += 1
                     diag = self.adb.get_recovery_diagnostics() if hasattr(self.adb, 'get_recovery_diagnostics') else {}
@@ -508,8 +532,8 @@ class AutoLoginManager:
                     h = self.adb.screen_height or height or 1280
                     self.adb.shell(f"input tap {w // 2} {int(h * 0.90)}")
                     time.sleep(1.5)
-                    if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
-                        logger.info("[+] [LOGIN_SUCCESS] 2FA verified into feed after consent tap!")
+                    if self.adb.is_authenticated_user_feed():
+                        logger.info("[+] [LOGIN_SUCCESS] Authenticated feed verified after consent tap!")
                         self._dismiss_post_login_prompts()
                         self._capture_checkpoint("07_auth_success")
                         report("AUTHENTICATED", "2FA verified into main feed")
@@ -519,8 +543,8 @@ class AutoLoginManager:
                     logger.info("[2FA_POST_LOGIN] Sending single Back keyevent to dismiss overlay...")
                     self.adb.shell("input keyevent 4")
                     time.sleep(2.0)
-                    if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
-                        logger.info("[+] [LOGIN_SUCCESS] 2FA verified into feed after dismissing overlay!")
+                    if self.adb.is_authenticated_user_feed():
+                        logger.info("[+] [LOGIN_SUCCESS] Authenticated feed verified after dismissing overlay!")
                         self._dismiss_post_login_prompts()
                         self._capture_checkpoint("07_auth_success")
                         report("AUTHENTICATED", "2FA verified into main feed")
@@ -531,7 +555,7 @@ class AutoLoginManager:
                     self.adb.shell("am start -n com.zhiliaoapp.musically/com.ss.android.ugc.aweme.main.MainActivity")
                     time.sleep(2.5)
                     if self.adb.verify_account_profile_authenticated(width, height):
-                        logger.info("[+] [LOGIN_SUCCESS] 2FA verified into feed after warm MainActivity launch!")
+                        logger.info("[+] [LOGIN_SUCCESS] Profile tab confirmed authenticated session after warm MainActivity launch!")
                         self._dismiss_post_login_prompts()
                         self._capture_checkpoint("07_auth_success")
                         report("AUTHENTICATED", "2FA verified into main feed")
@@ -539,7 +563,13 @@ class AutoLoginManager:
 
         # Final check after bounded timeout expires
         self.adb.take_screenshot("auth_recordings/07_2fa_timeout_diag.png")
-        if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
+        if self.adb.is_authenticated_user_feed():
+            self._dismiss_post_login_prompts()
+            self._capture_checkpoint("07_auth_success")
+            report("AUTHENTICATED", "2FA verified into main feed")
+            return True
+        fg_final = self.adb.get_foreground_activity().lower()
+        if any(act in fg_final for act in ["mainactivity", ".main."]) and self.adb.verify_account_profile_authenticated(width, height):
             self._dismiss_post_login_prompts()
             self._capture_checkpoint("07_auth_success")
             report("AUTHENTICATED", "2FA verified into main feed")
