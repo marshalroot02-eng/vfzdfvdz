@@ -794,6 +794,15 @@ class TikTokBoosterOrchestrator:
         elif account and hasattr(account, 'device_id') and account.device_id:
             self.adb.set_persistent_device_identity(account.device_id)
 
+        # Check target stream online status
+        is_stream_live, live_msg = self.adb.check_stream_online_status(self.config.stream_url)
+        if not is_stream_live:
+            logger.warning(f"[-] Target stream is offline or ended: {live_msg}")
+            self.add_step_log("STREAM_OFFLINE", f"{live_msg}. Account remains authenticated.", "WARNING")
+            self.transition_state(RunnerState.COMPLETED, reason=live_msg)
+            self.send_heartbeat(include_screenshot=True, reason=live_msg)
+            return
+
         # 2. Launch Target Stream
         self.transition_state(RunnerState.OPENING_LIVE, reason=f"Opening target live stream room: {self.config.stream_url}")
         self.adb.launch_live_stream(
@@ -822,6 +831,14 @@ class TikTokBoosterOrchestrator:
 
         # Check for Live Room Login Interception (Discrepancy Gate)
         if self.adb.is_login_or_signup_screen() or not (live_authenticated or self.adb.is_live_stream_active()):
+            is_stream_live, live_msg = self.adb.check_stream_online_status(self.config.stream_url)
+            if not is_stream_live:
+                logger.warning(f"[-] Target stream is offline or ended: {live_msg}")
+                self.add_step_log("STREAM_OFFLINE", f"{live_msg}. Account remains authenticated.", "WARNING")
+                self.transition_state(RunnerState.COMPLETED, reason=live_msg)
+                self.send_heartbeat(include_screenshot=True, reason=live_msg)
+                return
+
             if self.adb.is_login_or_signup_screen():
                 logger.error("[-] [AUTH_MISMATCH] Live room requires login prompt despite prior authentication. Session invalid in Live context.")
                 self.add_step_log("AUTH_MISMATCH", "Live room requires login prompt. Session is not authenticated in Live room.", "ERROR")
