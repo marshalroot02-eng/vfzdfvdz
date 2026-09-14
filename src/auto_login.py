@@ -317,7 +317,13 @@ class AutoLoginManager:
                         self.adb._2fa_in_flight = True
                         self.adb._2fa_in_flight_time = time.time()
                         try:
-                            if self._forensic_investigate_2fa(code, masked_acc, width, height, state_callback):
+                            self.adb.shell(f"input text {code[0]}")
+                            time.sleep(0.3)
+                            self.adb.shell(f"input text {code[1:]}")
+                            if state_callback:
+                                state_callback("LOGIN_SUBMITTING", f"Submitted 2FA code {code[:2]}****")
+                            self._capture_checkpoint("06_2fa_code_submitted")
+                            if self.validate_post_2fa_transition(masked_acc, width, height, state_callback):
                                 return True
                         finally:
                             self.adb._2fa_in_flight = False
@@ -685,7 +691,7 @@ class AutoLoginManager:
                 return False
 
             # Check for and AGREE to Terms & Conditions modal if loaded post-2FA
-            if any(k in ui_post for k in ["terms of service", "privacy policy", "terms and conditions", "terms of use", "agree and continue"]):
+            if "universalpopupactivity" in fg_lower or any(k in ui_post for k in ["terms of service", "privacy policy", "terms and conditions", "terms of use", "agree and continue"]):
                 logger.info("[2FA_POST_LOGIN] Terms & Conditions modal presented. Explicitly AGREEING...")
                 self.handle_terms_and_conditions(width, height)
                 time.sleep(2.0)
