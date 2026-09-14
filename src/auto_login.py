@@ -315,6 +315,7 @@ class AutoLoginManager:
                     if code:
                         logger.info(f"Typing retrieved verification code '{code[:2]}****' into TikTok...")
                         self.adb._2fa_in_flight = True
+                        self.adb._2fa_in_flight_time = time.time()
                         try:
                             if self._forensic_investigate_2fa(code, masked_acc, width, height, state_callback):
                                 return True
@@ -402,7 +403,7 @@ class AutoLoginManager:
             self.adb.shell("am start -n com.zhiliaoapp.musically/com.ss.android.ugc.aweme.main.MainActivity")
             time.sleep(2.5)
             self._dismiss_post_login_prompts()
-            if self.adb.is_authenticated_user_feed() or self.adb.is_live_stream_active():
+            if self.adb.is_authenticated_user_feed() or self.adb.verify_account_profile_authenticated(width, height):
                 report("AUTHENTICATED", "User authenticated into main feed after overlay rescue")
                 self._capture_checkpoint("07_auth_success")
                 return True
@@ -559,17 +560,9 @@ class AutoLoginManager:
         # STATE B: Immediately AFTER typing 6th digit
         record_state("STATE_B_AFTER_6TH_DIGIT", "state_B_immediately_after_6th_digit.png")
 
-        # STATE C: 2 seconds later
-        time.sleep(2.0)
-        record_state("STATE_C_2S_LATER", "state_C_2s_after_6th_digit.png")
-
-        # STATE D: 10 seconds later
-        time.sleep(8.0)
-        record_state("STATE_D_10S_LATER", "state_D_10s_after_6th_digit.png")
-
-        # STATE E: 60 seconds later
-        time.sleep(50.0)
-        record_state("STATE_E_60S_LATER", "state_E_60s_after_6th_digit.png")
+        # STATE C: 1.5 seconds later (initial transition)
+        time.sleep(1.5)
+        record_state("STATE_C_AFTER_6TH_DIGIT", "state_C_2s_after_6th_digit.png")
 
         # Full Logcat Dump & Extraction
         log_info("5. Dumping and filtering comprehensive 2FA logcat...")
@@ -598,9 +591,9 @@ class AutoLoginManager:
         log_info("FORENSIC OBSERVATION PHASE COMPLETE. ENTERING BOUNDED TRANSITION VALIDATION.")
         log_info("=" * 60)
 
-        # Enter bounded transition validation (max_checks=12, ~30s bounded wait)
-        # Guarantees: ZERO Back keys, ZERO warm launches, ZERO fake auth
-        return self.validate_post_2fa_transition(masked_acc, width, height, state_callback, max_checks=12)
+        # Enter bounded transition validation (max_checks=25, ~60s bounded wait)
+        # Guarantees: ZERO Back keys during active 2FA, ZERO fake auth, controlled WebView wake
+        return self.validate_post_2fa_transition(masked_acc, width, height, state_callback, max_checks=25)
 
     def validate_post_2fa_transition(
         self, 
@@ -665,6 +658,29 @@ class AutoLoginManager:
                 self.last_failure_reason = "IP_RATE_LIMITED"
                 self._capture_checkpoint("06_2fa_rate_limited")
                 report("LOGIN_RATE_LIMITED", "Maximum attempts reached on 2FA")
+                return False
+
+            # Controlled Vision Fix: If SparkActivity remains blank white after initial transit, tap center to wake compositor
+            if "sparkactivity" in fg_lower and len(ui_post) == 0 and check_idx == 3:
+                logger.info("[2FA_CONTROL] SparkActivity is blank. Tapping center to wake WebView compositor...")
+                self.adb.shell(f"input tap {width // 2} {height // 2}")
+                time.sleep(1.2)
+                ui_post = self.adb.get_ui_text_content().lower()
+
+            # Controlled Vision Fix: Identity Verification (IDV) method selection ("Email", "Verify with email")
+            if any(k in ui_post for k in ["verify your identity", "choose a method", "try another method", "suspicious_login"]):
+                logger.info(f"[2FA_CONTROL] IDV verification screen detected for {masked_acc}.")
+                if any(em in ui_post for em in ["email", "verify by email", "send code"]):
+                    logger.info("[2FA_CONTROL] Selecting 'Email' verification method on IDV...")
+                    self.adb.click_element(text="Email") or self.adb.click_element(text="Verify by email") or self.adb.click_element(text="Send code")
+                    time.sleep(2.0)
+                    ui_post = self.adb.get_ui_text_content().lower()
+
+            # Controlled Vision Fix: Secondary challenge requiring manual/external intervention ("another device", "security questions")
+            if any(c in ui_post for c in ["another device", "security questions", "scan qr code", "identity verification failed"]):
+                logger.warning(f"[-] [LOGIN_CHALLENGE] TikTok secondary challenge requires manual intervention for {masked_acc}: {ui_post[:100]}")
+                self._capture_checkpoint("06_idv_challenge_blocked")
+                report("LOGIN_CHALLENGE", "Secondary verification requires manual intervention")
                 return False
 
             # Check for and AGREE to Terms & Conditions modal if loaded post-2FA
