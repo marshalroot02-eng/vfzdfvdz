@@ -138,6 +138,12 @@ class ADBController:
 
         logger.info(f"[Runtime Android OS] Version: Android {self.android_version} (API Level {self.sdk_level}) | Boot Completed: {self.boot_completed}")
 
+        # Enable Android accessibility framework so Chromium WebViews expose their DOM hierarchy to UIAutomator
+        try:
+            self.shell("settings put secure accessibility_enabled 1")
+        except Exception as e:
+            logger.debug(f"Accessibility setting note: {e}")
+
         # Strict Milestone 1 Validation:
         if self.config.require_api_level and self.sdk_level != self.config.require_api_level:
             logger.critical(f"RUNTIME VERSION MISMATCH: Required API Level {self.config.require_api_level} but device reported API Level {self.sdk_level} (Android {self.android_version})!")
@@ -850,9 +856,13 @@ class ADBController:
         # Check if 2FA was submitted / in flight on controller
         if getattr(self, "_2fa_in_flight", False):
             # In-flight 2FA on SparkActivity, CrossPlatformActivity, or auth containers
-            if any(act in fg for act in ["sparkactivity", "crossplatformactivity", "bulletcontaineractivity",
-                                        "signuporloginactivity", "i18nsignupactivity", "loginmethodlistactivity"]):
-                return True
+            in_flight_ts = getattr(self, "_2fa_in_flight_time", None)
+            # If timestamp tracked, respect a bounded 10.0s in-flight token exchange window.
+            # If timestamp is None (e.g. manual mock in test), treat as active in-flight.
+            if in_flight_ts is None or (time.time() - in_flight_ts < 10.0):
+                if any(act in fg for act in ["sparkactivity", "crossplatformactivity", "bulletcontaineractivity",
+                                            "signuporloginactivity", "i18nsignupactivity", "loginmethodlistactivity"]):
+                    return True
 
         return False
 
