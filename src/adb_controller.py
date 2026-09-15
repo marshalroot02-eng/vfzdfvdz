@@ -894,9 +894,9 @@ class ADBController:
         if getattr(self, "_2fa_in_flight", False):
             # In-flight 2FA on SparkActivity, CrossPlatformActivity, or auth containers
             in_flight_ts = getattr(self, "_2fa_in_flight_time", None)
-            # If timestamp tracked, respect a bounded 10.0s in-flight token exchange window.
+            # If timestamp tracked, respect a bounded 35.0s in-flight token exchange window.
             # If timestamp is None (e.g. manual mock in test), treat as active in-flight.
-            if in_flight_ts is None or (time.time() - in_flight_ts < 10.0):
+            if in_flight_ts is None or (time.time() - in_flight_ts < 35.0):
                 if any(act in fg for act in ["sparkactivity", "crossplatformactivity", "bulletcontaineractivity",
                                             "signuporloginactivity", "i18nsignupactivity", "loginmethodlistactivity"]):
                     return True
@@ -907,8 +907,8 @@ class ADBController:
         """
         Navigates to the Profile tab on MainActivity to verify whether the session is
         an authenticated user or an unauthenticated guest. Returns to Home tab before returning.
-        Strictly requires positive authenticated account evidence (e.g. 'Edit profile', followers statistics)
-        and rejects guest indicators or generic feed tokens.
+        Strictly requires positive authenticated account evidence ('Edit profile', 'Set up profile', 'Add bio')
+        and rejects guest indicators (e.g. 'Log into existing account', 'Login' button).
         """
         try:
             w = self.screen_width or width or 720
@@ -918,7 +918,7 @@ class ADBController:
             profile_x = int(w * 0.90)
             profile_y = int(h * 0.96)
             self.shell(f"input tap {profile_x} {profile_y}")
-            time.sleep(1.5)
+            time.sleep(1.8)
 
             fg = self.get_foreground_activity().lower()
             if any(act in fg for act in ["i18nsignup", "signuporlogin", "loginmethodlist", "auth"]):
@@ -931,18 +931,20 @@ class ADBController:
 
             # Check if login prompt / guest indicators appear on Profile screen
             guest_indicators = [
-                "log in to tiktok", "sign up for tiktok", "sign up",
-                "use phone / email / username", "continue with google",
-                "continue with facebook", "log in or sign up", "tap to log in",
-                "log in", "already have an account"
+                "log into existing account", "log in to tiktok", "sign up for tiktok",
+                "use phone / email / username", "continue with google", "continue with facebook",
+                "log in or sign up", "tap to log in", "already have an account"
             ]
-            is_guest = any(phrase in ui_text for phrase in guest_indicators)
+            # Match standalone login / sign-up words or phrases
+            tokens = [t.strip(",.!?\"'") for t in ui_text.split() if t.strip()]
+            has_login_btn = "login" in tokens or "log in" in ui_text or "sign up" in ui_text or "signup" in tokens
+            is_guest = any(phrase in ui_text for phrase in guest_indicators) or has_login_btn
 
             # Positive indicators that ONLY exist on an authenticated account profile
+            # NEVER include 'following', 'followers', or 'likes' - those are shown on Guest profile too!
             positive_auth_indicators = [
-                "edit profile", "share profile", "add bio", "drafts",
-                "favorites", "following", "followers", "likes",
-                "set up profile", "find friends", "orders", "settings and privacy"
+                "edit profile", "share profile", "add bio", "set up profile",
+                "manage account", "drafts"
             ]
             is_auth = any(cue in ui_text for cue in positive_auth_indicators)
 
@@ -953,14 +955,14 @@ class ADBController:
             time.sleep(1.0)
 
             if is_guest:
-                logger.info("[-] Profile verification confirmed: Session is GUEST.")
+                logger.info(f"[-] Profile verification confirmed: Session is GUEST (login/guest cues present).")
                 return False
 
             if is_auth:
-                logger.info("[+] Profile verification confirmed: Positive account indicators present (Session is AUTHENTICATED).")
+                logger.info("[+] Profile verification confirmed: Positive account indicators present ('edit profile').")
                 return True
 
-            logger.warning("[-] Profile check failed: No positive authenticated account indicators found. Session is GUEST.")
+            logger.warning("[-] Profile check failed: No positive authenticated account indicators found ('edit profile'). Session is GUEST.")
             return False
         except Exception as e:
             logger.debug(f"Profile auth verification notice: {e}")
@@ -979,13 +981,14 @@ class ADBController:
             return False
         ui_text = self.get_ui_text_content().lower()
         if any(phrase in ui_text for phrase in [
-            "log in to tiktok", "sign up for tiktok", "use phone / email / username",
-            "continue with google", "continue with facebook", "log in or sign up"
+            "log into existing account", "log in to tiktok", "sign up for tiktok",
+            "use phone / email / username", "continue with google", "continue with facebook",
+            "log in or sign up"
         ]):
             return False
 
         # Positive indicators of a genuine authenticated account session:
-        # 1. Post-login onboarding / consent prompts that only appear for logged-in accounts
+        # 1. Post-login onboarding / consent prompts that only appear for newly authenticated accounts
         auth_onboarding_cues = [
             "save login info", "save your login info", "sync contacts",
             "sync facebook friends", "allow notifications"
@@ -993,9 +996,10 @@ class ADBController:
         if any(cue in ui_text for cue in auth_onboarding_cues):
             return True
 
-        # 2. In Profile view: authenticated profile displays 'Edit profile', followers count, bio, etc.
+        # 2. In Profile view: authenticated profile displays 'Edit profile', 'Set up profile', 'Add bio'
+        # NEVER match 'favorites', 'share', 'following', 'likes' as video player feed contains those!
         profile_authenticated_cues = [
-            "edit profile", "share profile", "add bio", "drafts", "favorites"
+            "edit profile", "set up profile", "add bio"
         ]
         if any(cue in ui_text for cue in profile_authenticated_cues):
             return True
