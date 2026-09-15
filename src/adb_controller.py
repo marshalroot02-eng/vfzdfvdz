@@ -442,6 +442,11 @@ class ADBController:
             live_target = f"https://www.tiktok.com/@{username}/live"
             resp = requests.get(live_target, headers=headers, timeout=8)
             if resp.status_code == 200 and resp.text:
+                # If TikTok WAF challenged or bot-blocked the web probe, do not assume offline
+                if "SlardarWAF" in resp.text or "slardarClient" in resp.text:
+                    logger.info(f"Creator @{username} web probe returned WAF challenge; deferring live validation to in-app player")
+                    return True, f"Creator @{username} web probe WAF challenged, deferring to in-app player"
+
                 m_status = re.search(r'"status":\s*(\d+)', resp.text)
                 m_room = re.search(r'"roomId":"(\d+)"', resp.text)
                 # Specific check for ended status (status: 4)
@@ -450,8 +455,11 @@ class ADBController:
                 # Specific check for active status (status: 2)
                 if m_status and m_status.group(1) == "2":
                     return True, f"Creator @{username} live active (status: 2)"
-                # If room ID is missing and no status 2, creator is not live
-                if not m_room and not m_status:
+                # If valid full page payload but no active room or status
+                if not m_room and not m_status and ("__UNIVERSAL_DATA_FOR_REHYDRATION__" in resp.text or "SIGI_STATE" in resp.text):
+                    if "webapp.live-detail" not in resp.text:
+                        logger.info(f"Creator @{username} web SSR omitted live-detail; deferring to in-app player")
+                        return True, f"Creator @{username} SSR live-detail omitted, deferring to in-app player"
                     return False, f"Target creator @{username} is not currently live (no active room)"
             return True, f"Creator @{username} live active"
         except Exception as e:
