@@ -419,188 +419,6 @@ class AutoLoginManager:
         self._capture_checkpoint("07_auth_failed")
         return False
 
-    def _forensic_investigate_2fa(
-        self,
-        code: str,
-        masked_acc: str,
-        width: int,
-        height: int,
-        state_callback: Optional[Callable[[str, str], None]] = None
-    ) -> bool:
-        """
-        Comprehensive Forensic Investigation of the 2FA SparkActivity Hang.
-        Captures exact timestamps, UI state, IME focus, submit button status,
-        emulator network connectivity, logcat, and process lifecycle across States A, B, C, D, E.
-        CRITICAL: Never presses Enter/Back, never bypasses auth, never declares AUTHENTICATED
-        without positive profile verification.
-        """
-        import datetime
-        import xml.etree.ElementTree as ET
-        t_start = time.time()
-
-        def now_iso():
-            return datetime.datetime.utcnow().isoformat() + "Z"
-
-        def log_info(msg):
-            logger.info(f"[FORENSIC] {msg}")
-
-        def dump_ime_and_focus():
-            focus = self.adb.shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'")
-            ime = self.adb.shell("dumpsys input_method | grep -E 'mServedView|mInputShown|mCurFocusedWindow|mImeWindowVis'")
-            return focus.strip(), ime.strip()
-
-        def check_submit_button_info(xml_str):
-            if not xml_str:
-                return False, False, "No XML"
-            try:
-                root = ET.fromstring(xml_str)
-                submit_keywords = ["submit", "continue", "verify", "done", "next", "confirm", "log in", "login"]
-                for node in root.iter("node"):
-                    txt = node.attrib.get("text", "").lower()
-                    desc = node.attrib.get("content-desc", "").lower()
-                    cls = node.attrib.get("class", "")
-                    if any(k in txt or k in desc for k in submit_keywords):
-                        enabled = node.attrib.get("enabled", "false").lower() == "true"
-                        return True, enabled, f"class={cls}, text='{txt}', desc='{desc}', enabled={enabled}"
-            except Exception as e:
-                return False, False, f"Parse error: {e}"
-            return False, False, "Not found"
-
-        def test_emulator_network():
-            dns_ip = self.adb.shell("getprop net.dns1")
-            ping_ip = self.adb.shell("ping -c 1 -W 2 8.8.8.8 2>&1 | grep -E 'transmitted|received|loss'")
-            ping_dns = self.adb.shell("ping -c 1 -W 2 google.com 2>&1 | grep -E 'transmitted|received|loss'")
-            curl_tt = self.adb.shell("curl -I -s --connect-timeout 4 https://api.tiktokv.com/ 2>&1 | head -n 3 || echo 'CURL_FAIL'")
-            return {
-                "dns_server": dns_ip.strip(),
-                "ping_8.8.8.8": ping_ip.strip(),
-                "ping_google_com": ping_dns.strip(),
-                "curl_api_tiktokv": curl_tt.strip()
-            }
-
-        def record_state(state_name: str, screenshot_filename: str):
-            ts = now_iso()
-            elapsed = time.time() - t_start
-            fg = self.adb.get_foreground_activity()
-            xml = self.adb.dump_ui_hierarchy()
-            ui_text = self.adb.get_ui_text_content().lower()[:120].replace("\\n", " ").strip()
-            focus, ime = dump_ime_and_focus()
-            ps = self.adb.shell("ps -A | grep -E 'musically' | awk '{print $2, $8, $9}'")
-            net = test_emulator_network()
-            btn_exists, btn_enabled, btn_desc = check_submit_button_info(xml)
-
-            # Save state screenshot
-            self.adb.take_screenshot(f"auth_recordings/{screenshot_filename}")
-
-            # Logcat slice
-            logcat_slice = self.adb.shell("logcat -d -t 60 -v time | grep -E -i 'musically|Spark|Lynx|WebView|chromium|InputMethod|Cronet|ttnet|passport|auth'")
-
-            log_info(f"=== {state_name} (elapsed={elapsed:.2f}s, timestamp={ts}) ===")
-            log_info(f"  Activity: {fg}")
-            log_info(f"  UI text summary: '{ui_text}' (XML len={len(xml)})")
-            log_info(f"  Focused Element: {focus}")
-            log_info(f"  IME / Keyboard State: {ime}")
-            log_info(f"  Submit Button: exists={btn_exists}, enabled={btn_enabled} ({btn_desc})")
-            log_info(f"  Process State: {ps}")
-            log_info(f"  Emulator Network: {net}")
-            if logcat_slice:
-                lines = [l.strip() for l in logcat_slice.splitlines() if l.strip()][-8:]
-                log_info(f"  Recent Logcat ({len(lines)} lines):")
-                for l in lines:
-                    log_info(f"    {l[:140]}")
-            return {
-                "state": state_name,
-                "timestamp": ts,
-                "elapsed": elapsed,
-                "activity": fg,
-                "ui_text": ui_text,
-                "focus": focus,
-                "ime": ime,
-                "submit_button": (btn_exists, btn_enabled, btn_desc),
-                "network": net
-            }
-
-        log_info("=" * 60)
-        log_info("STARTING FORENSIC INVESTIGATION OF SPARKACTIVITY 2FA HANG")
-        log_info("=" * 60)
-
-        # Baseline: 2FA screen detected
-        t0_appear = now_iso()
-        log_info(f"1. 2FA Screen Active at {t0_appear}")
-        fg_init = self.adb.get_foreground_activity()
-        focus_init, ime_init = dump_ime_and_focus()
-        net_init = test_emulator_network()
-        log_info(f"  Initial Activity: {fg_init}")
-        log_info(f"  Initial Focus: {focus_init}")
-        log_info(f"  Initial IME: {ime_init}")
-        log_info(f"  Initial Network: {net_init}")
-
-        # Clear logcat for clean forensic trace
-        self.adb.shell("logcat -c")
-
-        # Input Commit Investigation:
-        # Step 1: Type 1st digit
-        t1_digit = now_iso()
-        log_info(f"2. Entering first digit '{code[0]}' at {t1_digit}")
-        self.adb.shell(f"input text {code[0]}")
-        time.sleep(0.3)
-        focus_after_d1, ime_after_d1 = dump_ime_and_focus()
-        log_info(f"  Focus after digit 1: {focus_after_d1}")
-
-        # Step 2: Type digits 2 through 5 (creating State A: 5 digits typed, before 6th digit)
-        log_info(f"3. Entering digits 2 through 5: '{code[1:5]}'")
-        self.adb.shell(f"input text {code[1:5]}")
-        time.sleep(0.5)
-
-        # STATE A: BEFORE typing 6th digit
-        record_state("STATE_A_BEFORE_6TH_DIGIT", "state_A_before_6th_digit.png")
-
-        # Step 3: Type 6th digit (creating State B: immediately after 6th digit)
-        t6_digit = now_iso()
-        log_info(f"4. Entering sixth digit '{code[5]}' at {t6_digit}")
-        self.adb.shell(f"input text {code[5]}")
-        if state_callback:
-            state_callback("LOGIN_SUBMITTING", f"Submitted 2FA code {code[:2]}****")
-        self._capture_checkpoint("06_2fa_code_submitted")
-
-        # STATE B: Immediately AFTER typing 6th digit
-        record_state("STATE_B_AFTER_6TH_DIGIT", "state_B_immediately_after_6th_digit.png")
-
-        # STATE C: 1.5 seconds later (initial transition)
-        time.sleep(1.5)
-        record_state("STATE_C_AFTER_6TH_DIGIT", "state_C_2s_after_6th_digit.png")
-
-        # Full Logcat Dump & Extraction
-        log_info("5. Dumping and filtering comprehensive 2FA logcat...")
-        full_logcat = self.adb.shell("logcat -d -v time | grep -E -i 'Spark|Lynx|WebView|chromium|Aweme|bytedance|ttnet|Cronet|passport|account|login|auth|ticket|token|net|ssl|http|timeout|connect'")
-
-        # Sanitize logcat (mask any credentials)
-        sanitized_logcat = full_logcat.replace(code, "******")
-        if masked_acc and "@" in masked_acc:
-            raw_acc = masked_acc.split("***@")[0]
-            if raw_acc:
-                sanitized_logcat = sanitized_logcat.replace(raw_acc, "***")
-
-        try:
-            os.makedirs("auth_recordings", exist_ok=True)
-            with open("auth_recordings/forensic_logcat_2fa.txt", "w", encoding="utf-8") as f:
-                f.write(sanitized_logcat)
-            log_info(f"Saved filtered logcat to auth_recordings/forensic_logcat_2fa.txt ({len(sanitized_logcat)} chars)")
-        except Exception as e:
-            logger.debug(f"Logcat save note: {e}")
-
-        log_info("=== KEY LOGCAT EVIDENCE (Last 25 lines) ===")
-        for line in [l.strip() for l in sanitized_logcat.splitlines() if l.strip()][-25:]:
-            log_info(f"  {line[:150]}")
-
-        log_info("=" * 60)
-        log_info("FORENSIC OBSERVATION PHASE COMPLETE. ENTERING BOUNDED TRANSITION VALIDATION.")
-        log_info("=" * 60)
-
-        # Enter bounded transition validation (max_checks=25, ~60s bounded wait)
-        # Guarantees: ZERO Back keys during active 2FA, ZERO fake auth, controlled WebView wake
-        return self.validate_post_2fa_transition(masked_acc, width, height, state_callback, max_checks=25)
-
     def validate_post_2fa_transition(
         self, 
         masked_acc: str = "***", 
@@ -610,14 +428,13 @@ class AutoLoginManager:
         max_checks: int = 35
     ) -> bool:
         """
-        Bounded Post-2FA Authentication Completion & Recovery State Machine.
-        1. Waits for 2FA verification to complete; NEVER sends Back keyevents, swipes,
-           or launches MainActivity while TikTok is actively verifying.
-        2. Detects and explicitly Agrees to Terms & Conditions modals.
-        3. Verifies genuine authenticated state (never accepts unauthenticated guest
-           MainActivity as proof of success).
-        4. Captures diagnostic snapshot before executing bounded recovery for genuinely
-           hung overlays.
+        Bounded Post-2FA Authentication Completion State Machine.
+        1. Allows TikTok sufficient time (up to ~70s) to complete auth token exchange and redirect.
+        2. NEVER sends Back key or forces MainActivity launch while SparkActivity/auth is in flight,
+           as doing so forcibly aborts the 2FA handshake and drops the app into unauthenticated Guest mode.
+        3. Interacts with webview/Terms modals (taps 'Agree and continue', 'Email', 'Send code', 'Continue').
+        4. Strictly requires verified profile authentication via verify_account_profile_authenticated
+           and rejects guest mode false-positives.
         """
         def report(st, msg):
             if state_callback:
@@ -625,32 +442,20 @@ class AutoLoginManager:
 
         recovery_attempts = 0
         for check_idx in range(max_checks):
-            time.sleep(2.5)
+            time.sleep(2.0)
 
             fg = self.adb.get_foreground_activity()
             fg_lower = fg.lower()
             ui_post = self.adb.get_ui_text_content().lower()
             ui_summary = ui_post[:80].replace('\n', ' ').strip()
             is_2fa_active = self.adb.is_2fa_actively_processing()
-            is_overlay = self.adb.is_webview_or_blank_overlay() if not is_2fa_active else False
-            is_authenticated = self.adb.is_authenticated_user_feed()
 
-            # Fix #5: White Screen Diagnostics
-            # Distinguishes: A. Active 2FA, B. Genuine stuck overlay, C. Authentication failure, D. Completed auth
             logger.info(
                 f"[2FA_WAIT] check=#{check_idx + 1}/{max_checks} activity={fg} "
-                f"active_2fa={is_2fa_active} overlay={is_overlay} "
-                f"auth_detected={is_authenticated} ui='{ui_summary}'"
+                f"active_2fa={is_2fa_active} ui='{ui_summary}'"
             )
 
-            # Fix #1 & Fix #4: Never interrupt active 2FA
-            # Invariant: If 2FA is actively processing, NEVER trigger recovery, Back key, or warm launch
-            if is_2fa_active:
-                logger.info(f"[2FA_WAIT] active_2fa=true overlay=false action=WAIT (TikTok is actively processing 2FA for {masked_acc})")
-                report("LOGIN_SUBMITTING", f"Verifying 2FA ({check_idx + 1}/{max_checks})...")
-                continue
-
-            # Fix #6: Check for genuine terminal TikTok rejection ("Incorrect code", "Code expired")
+            # 1. Check for genuine terminal TikTok rejection ("Incorrect code", "Code expired")
             terminal_rejections = ["incorrect code", "code expired", "wrong code", "enter correct code", "verification rejected"]
             if any(err_kw in ui_post for err_kw in terminal_rejections):
                 logger.warning(f"[-] TikTok rejected 2FA code for {masked_acc}. UI message: {ui_post[:100]}")
@@ -658,7 +463,7 @@ class AutoLoginManager:
                 report("LOGIN_FAILED", "2FA code rejected by TikTok")
                 return False
 
-            # Fix #6: Terminal rate limit on 2FA
+            # 2. Terminal rate limit on 2FA
             terminal_rate_limits = ["maximum number of attempts", "too many attempts", "try again later", "frequent requests"]
             if any(rate_msg in ui_post for rate_msg in terminal_rate_limits):
                 logger.error(f"[-] [LOGIN_RATE_LIMITED] 2FA attempt limit reached for {masked_acc}.")
@@ -667,37 +472,42 @@ class AutoLoginManager:
                 report("LOGIN_RATE_LIMITED", "Maximum attempts reached on 2FA")
                 return False
 
-            # Controlled Vision Fix: If SparkActivity remains blank white after initial transit, tap center to wake compositor
-            if "sparkactivity" in fg_lower and len(ui_post) == 0 and check_idx >= 1:
-                logger.info("[2FA_CONTROL] SparkActivity is blank. Tapping center to wake WebView compositor...")
-                self.adb.shell(f"input tap {width // 2} {height // 2}")
-                time.sleep(1.2)
-                ui_post = self.adb.get_ui_text_content().lower()
-
-            # Controlled Vision Fix: Identity Verification (IDV) method selection ("Email", "Verify with email")
-            if any(k in ui_post for k in ["verify your identity", "choose a method", "try another method", "suspicious_login"]):
-                logger.info(f"[2FA_CONTROL] IDV verification screen detected for {masked_acc}.")
-                if any(em in ui_post for em in ["email", "verify by email", "send code"]):
-                    logger.info("[2FA_CONTROL] Selecting 'Email' verification method on IDV...")
-                    self.adb.click_element(text="Email") or self.adb.click_element(text="Verify by email") or self.adb.click_element(text="Send code")
-                    time.sleep(2.0)
-                    ui_post = self.adb.get_ui_text_content().lower()
-
-            # Controlled Vision Fix: Secondary challenge requiring manual/external intervention ("another device", "security questions")
+            # 3. Secondary challenge requiring manual intervention ("another device", "security questions")
             if any(c in ui_post for c in ["another device", "security questions", "scan qr code", "identity verification failed"]):
                 logger.warning(f"[-] [LOGIN_CHALLENGE] TikTok secondary challenge requires manual intervention for {masked_acc}: {ui_post[:100]}")
                 self._capture_checkpoint("06_idv_challenge_blocked")
                 report("LOGIN_CHALLENGE", "Secondary verification requires manual intervention")
                 return False
 
-            # Check for and AGREE to Terms & Conditions modal if loaded post-2FA
+            # 4. Handle Terms & Conditions modal if presented
             if "universalpopupactivity" in fg_lower or any(k in ui_post for k in ["terms of service", "privacy policy", "terms and conditions", "terms of use", "agree and continue"]):
                 logger.info("[2FA_POST_LOGIN] Terms & Conditions modal presented. Explicitly AGREEING...")
                 self.handle_terms_and_conditions(width, height)
                 time.sleep(2.0)
                 ui_post = self.adb.get_ui_text_content().lower()
 
-            # Post-login onboarding / consent cues ("save login info", "sync contacts")
+            # 5. Handle SparkActivity / Lynx webview challenge or agreement (initial window)
+            if "sparkactivity" in fg_lower and check_idx < 6:
+                report("LOGIN_SUBMITTING", f"Processing 2FA verification ({check_idx + 1}/{max_checks})...")
+                # If blank, tap center once to ensure compositor wakes up
+                if len(ui_post) == 0 and check_idx in (1, 3):
+                    logger.info("[2FA_CONTROL] SparkActivity is blank. Tapping center to wake WebView compositor...")
+                    self.adb.shell(f"input tap {width // 2} {height // 2}")
+                    time.sleep(1.0)
+                    ui_post = self.adb.get_ui_text_content().lower()
+
+                # Check for clickable interactive actions on IDV or agreement webview
+                if any(em in ui_post for em in ["email", "verify by email", "send code"]):
+                    logger.info("[2FA_CONTROL] Selecting 'Email' / 'Send code' on IDV webview...")
+                    self.adb.click_element(text="Email") or self.adb.click_element(text="Verify by email") or self.adb.click_element(text="Send code")
+                    time.sleep(2.0)
+                elif any(c in ui_post for c in ["agree and continue", "agree", "continue", "accept", "confirm"]):
+                    logger.info("[2FA_CONTROL] Tapping agreement/continue button on SparkActivity...")
+                    self.adb.click_element(text="Agree and continue") or self.adb.click_element(text="Continue") or self.adb.click_element(text="Accept")
+                    time.sleep(2.0)
+                continue
+
+            # 6. Post-login onboarding / consent cues ("save login info", "sync contacts")
             if any(cue in ui_post for cue in ["save login info", "save your login info", "sync contacts", "allow notifications"]):
                 logger.info(f"[+] [LOGIN_SUCCESS] Post-login onboarding prompt detected for {masked_acc}!")
                 self._dismiss_post_login_prompts()
@@ -705,16 +515,7 @@ class AutoLoginManager:
                 report("AUTHENTICATED", "2FA verified into main feed")
                 return True
 
-            # Fix #2 & Fix #3: Genuine authentication verification into feed
-            # NOTE: NEVER accept is_live_stream_active() as proof of account authentication!
-            if self.adb.is_authenticated_user_feed():
-                logger.info(f"[+] [LOGIN_SUCCESS] Positive authenticated feed confirmed for {masked_acc}!")
-                self._dismiss_post_login_prompts()
-                self._capture_checkpoint("07_auth_success")
-                report("AUTHENTICATED", "2FA verified into main feed")
-                return True
-
-            # Fix #3: If on MainActivity, verify Profile tab for positive authenticated evidence
+            # 7. If on MainActivity, verify Profile tab for positive authenticated evidence
             if any(act in fg_lower for act in ["mainactivity", ".main."]):
                 logger.info(f"[2FA_POST_LOGIN] MainActivity detected. Verifying Profile tab for positive authentication ({masked_acc})...")
                 if self.adb.verify_account_profile_authenticated(width, height):
@@ -723,63 +524,43 @@ class AutoLoginManager:
                     report("AUTHENTICATED", "2FA verified into main feed")
                     return True
                 else:
-                    logger.warning("[-] Profile check indicates unauthenticated guest mode. Continuing wait...")
+                    logger.warning("[-] Profile check indicates unauthenticated guest mode. Waiting for session sync...")
 
-            # Fix #1 & Fix #4: Bounded Post-2FA White Screen / Overlay Recovery State Machine
-            # Trigger early recovery at check >= 1 if overlay is stuck
-            if check_idx >= 1 and recovery_attempts < 2 and not is_2fa_active:
-                if self.adb.is_webview_or_blank_overlay():
-                    recovery_attempts += 1
-                    diag = self.adb.get_recovery_diagnostics() if hasattr(self.adb, 'get_recovery_diagnostics') else {}
-                    logger.info(f"[2FA_POST_LOGIN] Overlay recovery #{recovery_attempts}/2 triggered: {diag}")
-                    report("LOGIN_SUBMITTING", f"Overlay recovery #{recovery_attempts} (waking feed)...")
-                    self.adb.take_screenshot(f"auth_recordings/recovery_diag_{recovery_attempts}.png")
+            # 8. Bounded recovery for stuck overlays (CrossPlatformActivity, blank screens, or prolonged SparkActivity)
+            allow_spark_recovery = ("sparkactivity" in fg_lower and check_idx >= 6)
+            is_non_spark_overlay = ("sparkactivity" not in fg_lower and self.adb.is_webview_or_blank_overlay())
+            if (is_non_spark_overlay or allow_spark_recovery) and recovery_attempts < 2 and not is_2fa_active:
+                recovery_attempts += 1
+                diag = self.adb.get_recovery_diagnostics() if hasattr(self.adb, 'get_recovery_diagnostics') else {}
+                logger.info(f"[2FA_POST_LOGIN] Overlay recovery #{recovery_attempts}/2 triggered on {fg}: {diag}")
+                report("LOGIN_SUBMITTING", f"Overlay recovery #{recovery_attempts} (waking feed)...")
+                self.adb.take_screenshot(f"auth_recordings/recovery_diag_{recovery_attempts}.png")
 
-                    # Action A: Tap bottom consent area in case an HTML webview button is present
-                    w = self.adb.screen_width or width or 720
-                    h = self.adb.screen_height or height or 1280
-                    self.adb.shell(f"input tap {w // 2} {int(h * 0.90)}")
-                    time.sleep(1.5)
-                    if self.adb.is_authenticated_user_feed():
-                        logger.info("[+] [LOGIN_SUCCESS] Authenticated feed verified after consent tap!")
-                        self._dismiss_post_login_prompts()
-                        self._capture_checkpoint("07_auth_success")
-                        report("AUTHENTICATED", "2FA verified into main feed")
-                        return True
+                w = self.adb.screen_width or width or 720
+                h = self.adb.screen_height or height or 1280
+                self.adb.shell(f"input tap {w // 2} {int(h * 0.90)}")
+                time.sleep(1.0)
 
-                    # Action B: Single controlled Back keyevent to dismiss overlay
-                    logger.info("[2FA_POST_LOGIN] Sending single Back keyevent to dismiss overlay...")
-                    self.adb.shell("input keyevent 4")
-                    time.sleep(2.0)
-                    if self.adb.is_authenticated_user_feed():
-                        logger.info("[+] [LOGIN_SUCCESS] Authenticated feed verified after dismissing overlay!")
-                        self._dismiss_post_login_prompts()
-                        self._capture_checkpoint("07_auth_success")
-                        report("AUTHENTICATED", "2FA verified into main feed")
-                        return True
+                logger.info("[2FA_POST_LOGIN] Sending single Back keyevent to dismiss overlay...")
+                self.adb.shell("input keyevent 4")
+                time.sleep(1.0)
 
-                    # Action C: Warm-launch MainActivity to bring root to foreground
-                    logger.info("[2FA_POST_LOGIN] Warm-launching MainActivity to restore feed...")
-                    self.adb.shell("am start -n com.zhiliaoapp.musically/com.ss.android.ugc.aweme.main.MainActivity")
-                    time.sleep(2.0)
-                    fg_after = self.adb.get_foreground_activity().lower()
-                    if "universalpopupactivity" in fg_after:
-                        self.handle_terms_and_conditions(width, height)
-                        time.sleep(1.5)
-                    if self.adb.verify_account_profile_authenticated(width, height):
-                        logger.info("[+] [LOGIN_SUCCESS] Profile tab confirmed authenticated session after warm MainActivity launch!")
-                        self._dismiss_post_login_prompts()
-                        self._capture_checkpoint("07_auth_success")
-                        report("AUTHENTICATED", "2FA verified into main feed")
-                        return True
+                logger.info("[2FA_POST_LOGIN] Warm-launching MainActivity to restore feed...")
+                self.adb.shell("am start -n com.zhiliaoapp.musically/com.ss.android.ugc.aweme.main.MainActivity")
+                time.sleep(1.5)
+                fg_after = self.adb.get_foreground_activity().lower()
+                if "universalpopupactivity" in fg_after:
+                    self.handle_terms_and_conditions(width, height)
+                    time.sleep(1.0)
+                if self.adb.verify_account_profile_authenticated(width, height):
+                    logger.info("[+] [LOGIN_SUCCESS] Profile tab confirmed authenticated session after recovery!")
+                    self._dismiss_post_login_prompts()
+                    self._capture_checkpoint("07_auth_success")
+                    report("AUTHENTICATED", "2FA verified into main feed")
+                    return True
 
-        # Final check after bounded timeout expires
+        # Final evaluation after bounded timeout
         self.adb.take_screenshot("auth_recordings/07_2fa_timeout_diag.png")
-        if self.adb.is_authenticated_user_feed():
-            self._dismiss_post_login_prompts()
-            self._capture_checkpoint("07_auth_success")
-            report("AUTHENTICATED", "2FA verified into main feed")
-            return True
         fg_final = self.adb.get_foreground_activity().lower()
         if any(act in fg_final for act in ["mainactivity", ".main."]) and self.adb.verify_account_profile_authenticated(width, height):
             self._dismiss_post_login_prompts()
@@ -787,8 +568,9 @@ class AutoLoginManager:
             report("AUTHENTICATED", "2FA verified into main feed")
             return True
 
-        logger.error(f"[-] [LOGIN_FAILED] 2FA verification timed out after {max_checks} checks.")
-        report("LOGIN_FAILED", "2FA verification timed out")
+        logger.error(f"[-] [LOGIN_FAILED] 2FA verification timed out after {max_checks} checks. App remains in guest mode.")
+        report("LOGIN_FAILED", "2FA verification did not achieve authenticated session (remains guest)")
+        self._capture_checkpoint("07_auth_failed")
         return False
 
     def handle_terms_and_conditions(self, width: int = 720, height: int = 1280) -> bool:
