@@ -902,9 +902,9 @@ class ADBController:
         if getattr(self, "_2fa_in_flight", False):
             # In-flight 2FA on SparkActivity, CrossPlatformActivity, or auth containers
             in_flight_ts = getattr(self, "_2fa_in_flight_time", None)
-            # If timestamp tracked, respect a bounded 35.0s in-flight token exchange window.
+            # If timestamp tracked, respect a bounded 75.0s in-flight token exchange window.
             # If timestamp is None (e.g. manual mock in test), treat as active in-flight.
-            if in_flight_ts is None or (time.time() - in_flight_ts < 35.0):
+            if in_flight_ts is None or (time.time() - in_flight_ts < 75.0):
                 if any(act in fg for act in ["sparkactivity", "crossplatformactivity", "bulletcontaineractivity",
                                             "signuporloginactivity", "i18nsignupactivity", "loginmethodlistactivity"]):
                     return True
