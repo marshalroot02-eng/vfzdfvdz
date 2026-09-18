@@ -487,10 +487,11 @@ class AutoLoginManager:
                 ui_post = self.adb.get_ui_text_content().lower()
 
             # 5. Handle SparkActivity / Lynx webview challenge or agreement (initial window)
-            if "sparkactivity" in fg_lower and check_idx < 6:
+            # 5. Handle SparkActivity / Lynx webview challenge or agreement
+            if "sparkactivity" in fg_lower:
                 report("LOGIN_SUBMITTING", f"Processing 2FA verification ({check_idx + 1}/{max_checks})...")
-                # If blank, tap center once to ensure compositor wakes up
-                if len(ui_post) == 0 and check_idx in (1, 3):
+                # If blank, tap center periodically to ensure compositor wakes up
+                if len(ui_post) == 0 and check_idx in (1, 3, 6, 10, 15):
                     logger.info("[2FA_CONTROL] SparkActivity is blank. Tapping center to wake WebView compositor...")
                     self.adb.shell(f"input tap {width // 2} {height // 2}")
                     time.sleep(1.0)
@@ -526,10 +527,9 @@ class AutoLoginManager:
                 else:
                     logger.warning("[-] Profile check indicates unauthenticated guest mode. Waiting for session sync...")
 
-            # 8. Bounded recovery for stuck overlays (CrossPlatformActivity, blank screens, or prolonged SparkActivity)
-            allow_spark_recovery = ("sparkactivity" in fg_lower and check_idx >= 6)
+            # 8. Bounded recovery for stuck non-Spark overlays (CrossPlatformActivity or blank crashed webviews)
             is_non_spark_overlay = ("sparkactivity" not in fg_lower and self.adb.is_webview_or_blank_overlay())
-            if (is_non_spark_overlay or allow_spark_recovery) and recovery_attempts < 2 and not is_2fa_active:
+            if is_non_spark_overlay and recovery_attempts < 2 and not is_2fa_active:
                 recovery_attempts += 1
                 diag = self.adb.get_recovery_diagnostics() if hasattr(self.adb, 'get_recovery_diagnostics') else {}
                 logger.info(f"[2FA_POST_LOGIN] Overlay recovery #{recovery_attempts}/2 triggered on {fg}: {diag}")
