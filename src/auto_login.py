@@ -568,6 +568,12 @@ class AutoLoginManager:
             report("AUTHENTICATED", "2FA verified into main feed")
             return True
 
+        if "sparkactivity" in fg_final:
+            logger.warning("[-] [LOGIN_CHALLENGE] 2FA verification timed out on SparkActivity (Action Required / Secondary Challenge).")
+            report("LOGIN_CHALLENGE", "SparkActivity 2FA verification timed out (Action Required / Secondary Challenge)")
+            self._capture_checkpoint("07_spark_timeout_challenge")
+            return False
+
         logger.error(f"[-] [LOGIN_FAILED] 2FA verification timed out after {max_checks} checks. App remains in guest mode.")
         report("LOGIN_FAILED", "2FA verification did not achieve authenticated session (remains guest)")
         self._capture_checkpoint("07_auth_failed")
